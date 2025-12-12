@@ -360,34 +360,31 @@ fi"
 main() {
     init_config
 
-    # Get script name (for smd, sml detection)
+    # Get script name (for smd detection)
     local script_name=$(basename "$0")
 
     # Handle different invocations
     case "$script_name" in
         smd)
-            # smd = default connection or list if no default
+            # smd = connect to default (quick access)
             local default_conn=$(get_default)
             if [[ -n "$default_conn" ]]; then
-                connect "$default_conn"
+                # Check for -t flag
+                if [[ "${1:-}" == "-t" ]] || [[ "${1:-}" == "--tmux" ]]; then
+                    connect "$default_conn" "true"
+                else
+                    connect "$default_conn"
+                fi
             else
-                list_connections
+                echo -e "${RED}No default connection set. Use 'sm set <alias>' to set one.${NC}"
+                exit 1
             fi
-            ;;
-        sml)
-            # sml = interactive selection
-            interactive_select
             ;;
         sm)
             # sm with arguments
             if [[ $# -eq 0 ]]; then
-                # No args = default or list
-                local default_conn=$(get_default)
-                if [[ -n "$default_conn" ]]; then
-                    connect "$default_conn"
-                else
-                    list_connections
-                fi
+                # No args = interactive selection
+                interactive_select
             elif [[ "$1" == "list" ]]; then
                 list_connections
             elif [[ "$1" == "set" ]]; then
@@ -396,9 +393,6 @@ main() {
                     exit 1
                 fi
                 set_default "$2"
-            elif [[ "$1" == "default" ]]; then
-                # Interactive default selection
-                select_default_interactive
             elif [[ "$1" == "-t" ]] || [[ "$1" == "--tmux" ]]; then
                 # sm -t = default connection with tmux
                 local default_conn=$(get_default)
