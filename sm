@@ -60,7 +60,7 @@ list_connections() {
     local default_conn=$(get_default)
 
     echo -e "${GREEN}=== SM - SSH Manager ===${NC}"
-    printf "%-10s %-12s %-15s %-20s %s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "COMMAND"
+    printf "%-10s %-12s %-15s %-35s %s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "COMMAND"
     echo "--------------------------------------------------------------------------------"
 
     while IFS='|' read -r alias host port user directory command description key; do
@@ -74,9 +74,9 @@ list_connections() {
 
         # Highlight default (green row)
         if [[ "$alias" == "$default_conn" ]]; then
-            printf "${GREEN}%-10s %-12s %-15s %-20s %s${NC}\n" "$alias" "$hostalias" "$user" "$directory" "$command"
+            printf "${GREEN}%-10s %-12s %-15s %-35s %s${NC}\n" "$alias" "$hostalias" "$user" "$directory" "$command"
         else
-            printf "%-10s %-12s %-15s %-20s %s\n" "$alias" "$hostalias" "$user" "$directory" "$command"
+            printf "%-10s %-12s %-15s %-35s %s\n" "$alias" "$hostalias" "$user" "$directory" "$command"
         fi
     done < "$CONFIG_FILE"
 }
@@ -130,7 +130,7 @@ interactive_select() {
         tput ed
 
         echo -e "${GREEN}=== SM - SSH Manager ===${NC}"
-        printf "%-10s %-12s %-15s %-20s %s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "COMMAND"
+        printf "%-10s %-12s %-15s %-35s %s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "COMMAND"
         echo "--------------------------------------------------------------------------------"
 
         for i in "${!aliases[@]}"; do
@@ -140,21 +140,21 @@ interactive_select() {
             if [[ $i -eq $selected ]]; then
                 # Selected row - inverse video
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}\e[7m> %-8s %-12s %-15s %-20s %s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "${GREEN}\e[7m> %-8s %-12s %-15s %-35s %s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
                 else
-                    printf "\e[7m> %-8s %-12s %-15s %-20s %s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "\e[7m> %-8s %-12s %-15s %-35s %s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
                 fi
             else
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}  %-8s %-12s %-15s %-20s %s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "${GREEN}  %-8s %-12s %-15s %-35s %s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
                 else
-                    printf "  %-8s %-12s %-15s %-20s %s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "  %-8s %-12s %-15s %-35s %s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
                 fi
             fi
         done
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | D: Set Default | Esc/Q: Exit${NC}"
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | T: Tmux Split | D: Set Default | Esc/Q: Exit${NC}"
     }
 
     # Clear screen and draw
@@ -196,6 +196,11 @@ interactive_select() {
             tput cnorm
             clear
             connect "${aliases[$selected]}"
+        elif [[ "$key" == 't' || "$key" == 'T' ]]; then
+            # T key - connect with tmux split
+            tput cnorm
+            clear
+            connect "${aliases[$selected]}" "true"
         elif [[ "$key" == 'd' || "$key" == 'D' ]]; then
             # D key - set default
             set_default "${aliases[$selected]}"
@@ -278,6 +283,7 @@ select_default_interactive() {
 # Connect to a connection
 connect() {
     local alias="$1"
+    local use_tmux="${2:-false}"
 
     # Parse connection
     local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
@@ -298,9 +304,26 @@ connect() {
 
     ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
 
-    # Build remote command - always stay in shell after command finishes
+    # Build remote command
     local remote_cmd=""
-    if [[ -n "$directory" ]] && [[ -n "$command" ]]; then
+
+    if [[ "$use_tmux" == "true" ]] && [[ -n "$command" ]]; then
+        # Tmux split mode: command on top, bash on bottom
+        # If session exists, reattach. Otherwise create new.
+        local session_name="${alias}"
+        local cd_cmd=""
+        [[ -n "$directory" ]] && cd_cmd="cd $directory && "
+
+        remote_cmd="if tmux has-session -t ${session_name} 2>/dev/null; then \
+tmux attach -t ${session_name}; \
+else \
+${cd_cmd}tmux new-session -d -s ${session_name} && \
+tmux split-window -h -t ${session_name} && \
+tmux send-keys -t ${session_name}:0.0 '${command}' C-m && \
+tmux select-pane -t ${session_name}:0.0 && \
+tmux attach -t ${session_name}; \
+fi"
+    elif [[ -n "$directory" ]] && [[ -n "$command" ]]; then
         remote_cmd="cd $directory && $command; exec \$SHELL"
     elif [[ -n "$directory" ]]; then
         remote_cmd="cd $directory && exec \$SHELL"
@@ -317,6 +340,10 @@ connect() {
 
     if [[ -n "$command" ]]; then
         echo -e "${BLUE}Command: $command${NC}"
+    fi
+
+    if [[ "$use_tmux" == "true" ]]; then
+        echo -e "${YELLOW}Tmux split mode: command top, bash bottom${NC}"
     fi
 
     echo ""
@@ -372,9 +399,22 @@ main() {
             elif [[ "$1" == "default" ]]; then
                 # Interactive default selection
                 select_default_interactive
+            elif [[ "$1" == "-t" ]] || [[ "$1" == "--tmux" ]]; then
+                # sm -t = default connection with tmux
+                local default_conn=$(get_default)
+                if [[ -n "$default_conn" ]]; then
+                    connect "$default_conn" "true"
+                else
+                    echo -e "${RED}No default connection set${NC}"
+                    exit 1
+                fi
             else
-                # Direct connection by alias
-                connect "$1"
+                # Direct connection by alias, check for -t flag
+                if [[ "${2:-}" == "-t" ]] || [[ "${2:-}" == "--tmux" ]]; then
+                    connect "$1" "true"
+                else
+                    connect "$1"
+                fi
             fi
             ;;
         *)
