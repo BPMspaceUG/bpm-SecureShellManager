@@ -360,7 +360,7 @@ fi"
 main() {
     init_config
 
-    # Get script name (for smd detection)
+    # Get script name (for smd, sml detection)
     local script_name=$(basename "$0")
 
     # Handle different invocations
