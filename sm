@@ -160,7 +160,7 @@ interactive_select() {
         done
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | c: Claude | r: Claude -r | D: Default | Esc/Q: Exit${NC}"
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | L: List Sessions | R: Reset | D: Default | Esc/Q: Exit${NC}"
     }
 
     # Draw menu
@@ -201,14 +201,14 @@ interactive_select() {
             # Enter key - connect with zellij session restore
             tput cnorm
             connect "${aliases[$selected]}"
-        elif [[ "$key" == 'c' || "$key" == 'C' ]]; then
-            # c key - connect and start claude
-            tput cnorm
-            connect "${aliases[$selected]}" "claude"
         elif [[ "$key" == 'r' || "$key" == 'R' ]]; then
-            # r key - connect and start claude -r
+            # R key - reset session (delete and create fresh)
             tput cnorm
-            connect "${aliases[$selected]}" "claude -r"
+            connect_reset "${aliases[$selected]}"
+        elif [[ "$key" == 'l' || "$key" == 'L' ]]; then
+            # L key - list sessions on server and connect
+            tput cnorm
+            list_and_connect "${aliases[$selected]}"
         elif [[ "$key" == 'd' || "$key" == 'D' ]]; then
             # D key - set default
             set_default "${aliases[$selected]}"
@@ -241,10 +241,203 @@ set_default() {
     echo -e "${GREEN}Default set to: $new_default${NC}"
 }
 
+# List sessions on server and connect to selected one
+list_and_connect() {
+    local alias="$1"
+
+    # Parse connection
+    local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
+
+    if [[ -z "$line" ]]; then
+        echo -e "${RED}Error: Connection '$alias' not found${NC}"
+        exit 1
+    fi
+
+    IFS='|' read -r _ host port user directory description key <<< "$line"
+
+    # Build SSH command
+    local ssh_cmd="ssh"
+    if [[ -n "$key" ]]; then
+        ssh_cmd="$ssh_cmd -i $key"
+    fi
+    ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
+
+    local cd_cmd=""
+    [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
+
+    echo -e "${GREEN}=== Sessions on $alias ($description) ===${NC}"
+    echo -e "${YELLOW}Fetching sessions...${NC}"
+
+    # Get sessions from server (strip ANSI color codes)
+    local sessions=$($ssh_cmd "zellij list-sessions 2>/dev/null" | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$")
+
+    if [[ -z "$sessions" ]]; then
+        echo -e "${RED}No sessions found on server.${NC}"
+        read -p "Create new session '$alias'? [Y/n/b=back] " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
+            exit 0
+        elif [[ "$confirm" == "b" || "$confirm" == "B" ]]; then
+            exec "$0"
+        fi
+        exec $ssh_cmd -t "${cd_cmd}zellij attach -c ${alias}"
+    fi
+
+    # Build session array
+    local session_array=()
+    while IFS= read -r session; do
+        session_array+=("$session")
+    done <<< "$sessions"
+
+    # Add "New session" option
+    session_array+=("[NEW] Create session '$alias'")
+
+    local count=${#session_array[@]}
+    local selected=0
+
+    # Hide cursor
+    tput civis
+    trap 'tput cnorm' EXIT
+
+    # Draw function
+    draw_sessions() {
+        tput cup 0 0
+        tput ed
+
+        echo -e "${GREEN}=== Sessions on $alias ($description) ===${NC}"
+        echo ""
+
+        for i in "${!session_array[@]}"; do
+            local session="${session_array[$i]}"
+            local is_new=false
+            local is_exited=false
+            [[ "$session" == "[NEW]"* ]] && is_new=true
+            [[ "$session" == *"(EXITED)"* ]] && is_exited=true
+
+            if [[ $i -eq $selected ]]; then
+                if [[ "$is_new" == "true" ]]; then
+                    printf "${BLUE}\e[7m> %s\e[27m${NC}\n" "$session"
+                elif [[ "$is_exited" == "true" ]]; then
+                    printf "${RED}\e[7m> %s\e[27m${NC}\n" "$session"
+                else
+                    printf "${GREEN}\e[7m> %s\e[27m${NC}\n" "$session"
+                fi
+            else
+                if [[ "$is_new" == "true" ]]; then
+                    printf "${BLUE}  %s${NC}\n" "$session"
+                elif [[ "$is_exited" == "true" ]]; then
+                    printf "${RED}  %s${NC}\n" "$session"
+                else
+                    printf "${GREEN}  %s${NC}\n" "$session"
+                fi
+            fi
+        done
+
+        echo ""
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | Esc/Q: Cancel${NC}"
+    }
+
+    tput cup 0 0
+    tput ed
+    draw_sessions
+
+    # Read keys
+    while true; do
+        IFS= read -rsn1 key || continue
+
+        if [[ "$key" == $'\x1b' ]]; then
+            read -rsn2 -t 0.1 seq || true
+            if [[ "$seq" == '[A' ]]; then
+                # Up arrow
+                if [[ $selected -gt 0 ]]; then
+                    selected=$((selected - 1))
+                else
+                    selected=$((count - 1))
+                fi
+                draw_sessions
+            elif [[ "$seq" == '[B' ]]; then
+                # Down arrow
+                if [[ $selected -lt $((count - 1)) ]]; then
+                    selected=$((selected + 1))
+                else
+                    selected=0
+                fi
+                draw_sessions
+            elif [[ -z "$seq" ]]; then
+                # Escape - back to main menu
+                tput cnorm
+                exec "$0"
+            fi
+        elif [[ "$key" == '' ]]; then
+            # Enter - connect
+            tput cnorm
+            local selected_session="${session_array[$selected]}"
+
+            if [[ "$selected_session" == "[NEW]"* ]]; then
+                echo -e "${GREEN}Creating/attaching session '$alias'...${NC}"
+                exec $ssh_cmd -t "${cd_cmd}zellij attach -c ${alias}"
+            else
+                local session_name=$(echo "$selected_session" | awk '{print $1}')
+                echo -e "${GREEN}Connecting to session '$session_name'...${NC}"
+                exec $ssh_cmd -t "${cd_cmd}zellij attach ${session_name}"
+            fi
+        elif [[ "$key" == 'q' || "$key" == 'Q' ]]; then
+            # Q - back to main menu
+            tput cnorm
+            exec "$0"
+        fi
+    done
+}
+
+# Reset and connect (delete old session, create fresh)
+connect_reset() {
+    local alias="$1"
+
+    # Parse connection
+    local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
+
+    if [[ -z "$line" ]]; then
+        echo -e "${RED}Error: Connection '$alias' not found${NC}"
+        exit 1
+    fi
+
+    IFS='|' read -r _ host port user directory description key <<< "$line"
+
+    # Build SSH command
+    local ssh_cmd="ssh"
+    if [[ -n "$key" ]]; then
+        ssh_cmd="$ssh_cmd -i $key"
+    fi
+    ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
+
+    local session_name="${alias}"
+    local cd_cmd=""
+    [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
+
+    echo -e "${GREEN}Resetting: $alias ($description)${NC}"
+    echo -e "${YELLOW}Checking for existing session...${NC}"
+
+    # Check if session exists (strip ANSI codes for matching)
+    if $ssh_cmd "zellij list-sessions 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -q '${session_name}'"; then
+        echo -e "${RED}Session '${session_name}' exists!${NC}"
+        read -p "Delete and create fresh? [y/N] " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+        echo -e "${YELLOW}Deleting and recreating session...${NC}"
+    else
+        echo -e "${GREEN}No existing session, creating new...${NC}"
+    fi
+    echo ""
+
+    # Delete session with force (ignore errors) and create fresh
+    local remote_cmd="zellij delete-session ${session_name} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${session_name}"
+    exec $ssh_cmd -t "$remote_cmd"
+}
+
 # Connect to a connection
 connect() {
     local alias="$1"
-    local start_command="${2:-}"
 
     # Parse connection
     local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
@@ -270,41 +463,14 @@ connect() {
     local cd_cmd=""
     [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
 
-    local remote_cmd=""
-
-    if [[ -n "$start_command" ]]; then
-        # c or r pressed: Create 2-pane layout (command top, bash bottom)
-        # If session exists, attach to it. Otherwise create with layout.
-        local cmd_name="${start_command%% *}"
-        local cmd_args=""
-        if [[ "$start_command" == *" "* ]]; then
-            cmd_args="${start_command#* }"
-        fi
-
-        # Build layout file content
-        local layout_content=""
-        if [[ -n "$cmd_args" ]]; then
-            layout_content='layout { pane split_direction="vertical" { pane command="'"${cmd_name}"'" { args "'"${cmd_args}"'" } ; pane focus=true } }'
-        else
-            layout_content='layout { pane split_direction="vertical" { pane command="'"${cmd_name}"'" ; pane focus=true } }'
-        fi
-
-        # Create layout file first, then try attach or create new
-        remote_cmd="${cd_cmd}mkdir -p /tmp/sm-layouts; printf '%s\n' '${layout_content}' > /tmp/sm-layouts/${session_name}.kdl; zellij attach ${session_name} || zellij --session ${session_name} --layout /tmp/sm-layouts/${session_name}.kdl"
-    else
-        # Enter pressed: Simple session, attach or create
-        remote_cmd="${cd_cmd}zellij attach ${session_name} -c"
-    fi
+    # Attach or create session (try attach first, create if not exists)
+    local remote_cmd="${cd_cmd}zellij attach -c ${session_name}"
 
     echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
     echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
 
     if [[ -n "$directory" ]]; then
         echo -e "${BLUE}Directory: $directory${NC}"
-    fi
-
-    if [[ -n "$start_command" ]]; then
-        echo -e "${YELLOW}Starting: $start_command (top pane)${NC}"
     fi
 
     echo -e "${BLUE}Session: zellij ${session_name}${NC}"
@@ -334,8 +500,14 @@ main() {
             fi
             ;;
         sml)
-            # sml = list connections
-            list_connections
+            # sml = list zellij sessions on default server
+            local default_conn=$(get_default)
+            if [[ -n "$default_conn" ]]; then
+                list_and_connect "$default_conn"
+            else
+                echo -e "${RED}No default connection set. Use 'sm set <alias>' to set one.${NC}"
+                exit 1
+            fi
             ;;
         sm)
             # sm with arguments

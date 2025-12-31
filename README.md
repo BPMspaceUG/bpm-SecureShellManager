@@ -6,10 +6,9 @@ Ein schneller SSH-Verbindungsmanager mit interaktiver Auswahl und zellij Session
 
 - **Interaktive Auswahl** mit Pfeiltasten
 - **Schnellzugriff** auf Default-Verbindung via `smd`
+- **Session-Liste** auf Default-Server via `sml`
 - **Automatischer Verzeichniswechsel** nach SSH-Login
 - **Zellij Session-Persistenz** - Verbindung bleibt bei SSH-Abbruch aktiv
-- **Claude-Integration** - `c` startet Claude, `r` startet Claude mit Resume
-- **2-Pane Layout** - Claude oben, Bash unten (mit Maus-Unterstützung)
 - **Host-Aliase** für bessere Übersicht
 - **Individuelle SSH-Keys** pro Verbindung
 
@@ -47,7 +46,7 @@ export PATH="$HOME/.local/bin:$PATH"
 | `sm list` | Alle Verbindungen anzeigen |
 | `sm set <alias>` | Default-Verbindung setzen |
 | `smd` | Schnellzugriff auf Default |
-| `sml` | Alle Verbindungen auflisten |
+| `sml` | Sessions auf Default-Server auflisten |
 
 ### Interaktiver Modus
 
@@ -58,16 +57,28 @@ ALIAS      HOSTALIAS    USER            DIRECTORY
 > sm231    contabo2     rob-ico         ico-n8n-prozesse2
   sm232    contabo2     rob-ico         ico-cert
 
-↑↓ Navigate | Enter: Connect | c: Claude | r: Claude -r | D: Default | Esc/Q: Exit
+↑↓ Navigate | Enter: Connect | L: List Sessions | R: Reset | D: Default | Esc/Q: Exit
 ```
 
 **Tastenbelegung:**
 - `↑↓` - Navigation
 - `Enter` - Verbinden (zellij Session wiederherstellen/erstellen)
-- `c` - Verbinden + Claude starten (2-Pane: Claude oben, Bash unten)
-- `r` - Verbinden + Claude -r starten (Resume-Modus)
+- `L` - Sessions auf Server auflisten und auswählen
+- `R` - Session zurücksetzen (löschen und neu erstellen)
 - `D` - Als Default setzen
 - `Esc/Q` - Beenden
+
+### Session-Liste (L)
+
+```
+=== Sessions on sm210 (N8N Prozesse) ===
+
+> sm210 [Created 5m ago]
+  sm220 [Created 1h ago]
+  [NEW] Create session 'sm210'
+
+↑↓ Navigate | Enter: Connect | Esc/Q: Back
+```
 
 ## Session-Persistenz
 
@@ -78,20 +89,30 @@ SM nutzt **zellij** für Session-Persistenz:
 │ Dein PC          │ Server           │
 ├─────────────────────────────────────┤
 │ sm → Enter ──────┼─► zellij Session │
-│                  │   └── claude     │
+│                  │   └── deine App  │
 │ [SSH bricht ab]  │                  │
 │                  │   Session läuft! │
 │ sm → Enter ──────┼─► reattach       │
 └─────────────────────────────────────┘
 ```
 
-- Claude läuft weiter auch wenn SSH abbricht
+- Prozesse laufen weiter auch wenn SSH abbricht
 - Bei Reconnect: automatisch zur laufenden Session
 
-**Zellij-Vorteile gegenüber tmux:**
-- Maus-Klick zum Pane-Wechsel
-- Shortcuts werden unten angezeigt
-- Intuitivere Bedienung
+## Zellij Shortcuts
+
+| Shortcut | Beschreibung |
+|----------|--------------|
+| `Ctrl+o d` | **Detach** - Session verlassen (läuft weiter) |
+| `Ctrl+q` | **Quit** - Session beenden |
+| `Ctrl+p x` | Pane schließen |
+| `Alt+n` | Neues Pane |
+| `Alt+←→↑↓` | Pane wechseln |
+| Maus-Klick | Pane wechseln |
+
+**Wichtig:**
+- `Ctrl+o d` = Session bleibt aktiv, `Enter` verbindet wieder
+- `Ctrl+q` = Session wird beendet, `Enter` erstellt neue
 
 ## Konfiguration
 
@@ -127,44 +148,6 @@ default=sm231
 | directory | Nein | Verzeichnis nach Login |
 | description | Nein | Beschreibung für Anzeige |
 | ssh_key | Nein | Pfad zu SSH Key |
-
-### Host-Aliase
-
-Für kürzere Hostnamen in der Übersicht:
-```
-hostalias:very-long-hostname.example.com=short
-```
-
-## Beispiele
-
-```bash
-# Interaktive Auswahl starten
-sm
-
-# Direkt zu "prod" verbinden
-sm prod
-
-# Alle Verbindungen auflisten
-sm list
-sml
-
-# "staging" als Default setzen
-sm set staging
-
-# Schnell zum Default verbinden
-smd
-```
-
-## Zellij Shortcuts
-
-Falls du dich in zellij befindest:
-
-| Shortcut | Beschreibung |
-|----------|--------------|
-| Maus-Klick | Pane wechseln |
-| `Ctrl+p` `d` | Detach (Session verlassen, läuft weiter) |
-| `Alt+n` | Neues Pane |
-| `Alt+←→↑↓` | Pane wechseln |
 
 ## Deinstallation
 
