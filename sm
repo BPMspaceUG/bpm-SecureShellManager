@@ -294,9 +294,13 @@ list_and_connect() {
     local count=${#session_array[@]}
     local selected=0
 
-    # Hide cursor
+    # Hide cursor and setup cleanup
+    cleanup() {
+        tput cnorm 2>/dev/null
+        printf '\e[?1000l\e[?1002l\e[?1003l\e[?1006l' 2>/dev/null
+    }
     tput civis
-    trap 'tput cnorm' EXIT
+    trap cleanup EXIT INT TERM HUP
 
     # Draw function
     draw_sessions() {
