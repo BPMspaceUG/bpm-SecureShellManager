@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SM - SSH Manager
-# Quick SSH connection manager with directory + command execution
+# Quick SSH connection manager with zellij session persistence
+# Invoke as 'sml' for list mode
 
 set -uo pipefail
 
@@ -23,11 +24,14 @@ init_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         cat > "$CONFIG_FILE" << 'EOF'
 # SM - SSH Manager Configuration
-# Format: alias|host|port|user|directory|command|description|[ssh_key]
+# Format: alias|host|port|user|directory|description|[ssh_key]
 #
 # Example:
-# sm231|contabo2.example.com|22|rob-ico|ico-n8n-prozesse2|claude --resume|N8N Claude|
-# sm232|contabo2.example.com|22|rob-ico|ico-cert|npm start|Cert Service|~/.ssh/special_key
+# sm231|contabo2.example.com|22|rob-ico|ico-n8n-prozesse2|N8N Server|
+# sm232|contabo2.example.com|22|rob-ico|ico-cert|Cert Service|~/.ssh/special_key
+#
+# Host aliases (optional):
+# hostalias:contabo2.example.com=contabo2
 #
 # Set default connection:
 # default=sm231
@@ -60,10 +64,10 @@ list_connections() {
     local default_conn=$(get_default)
 
     echo -e "${GREEN}=== SM - SSH Manager ===${NC}"
-    printf "%-10s %-12s %-15s %-35s %s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "COMMAND"
+    printf "%-10s %-12s %-15s %-35s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
     echo "--------------------------------------------------------------------------------"
 
-    while IFS='|' read -r alias host port user directory command description key; do
+    while IFS='|' read -r alias host port user directory description key; do
         # Skip comments, empty lines, host aliases, default
         [[ "$alias" =~ ^#.*$ ]] && continue
         [[ -z "$alias" ]] && continue
@@ -74,9 +78,9 @@ list_connections() {
 
         # Highlight default (green row)
         if [[ "$alias" == "$default_conn" ]]; then
-            printf "${GREEN}%-10s %-12s %-15s %-35s %s${NC}\n" "$alias" "$hostalias" "$user" "$directory" "$command"
+            printf "${GREEN}%-10s %-12s %-15s %-35s${NC}\n" "$alias" "$hostalias" "$user" "$directory"
         else
-            printf "%-10s %-12s %-15s %-35s %s\n" "$alias" "$hostalias" "$user" "$directory" "$command"
+            printf "%-10s %-12s %-15s %-35s\n" "$alias" "$hostalias" "$user" "$directory"
         fi
     done < "$CONFIG_FILE"
 }
@@ -88,10 +92,9 @@ interactive_select() {
     local hostaliases=()
     local users=()
     local directories=()
-    local commands=()
 
     # Build arrays
-    while IFS='|' read -r alias host port user directory command description key; do
+    while IFS='|' read -r alias host port user directory description key; do
         [[ "$alias" =~ ^#.*$ ]] && continue
         [[ -z "$alias" ]] && continue
         [[ "$alias" =~ ^default= ]] && continue
@@ -101,7 +104,6 @@ interactive_select() {
         hostaliases+=("$(get_host_alias "$host")")
         users+=("$user")
         directories+=("$directory")
-        commands+=("$command")
     done < "$CONFIG_FILE"
 
     local count=${#aliases[@]}
@@ -130,7 +132,7 @@ interactive_select() {
         tput ed
 
         echo -e "${GREEN}=== SM - SSH Manager ===${NC}"
-        printf "%-10s %-12s %-15s %-35s %s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "COMMAND"
+        printf "%-10s %-12s %-15s %-35s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
         echo "--------------------------------------------------------------------------------"
 
         for i in "${!aliases[@]}"; do
@@ -140,25 +142,26 @@ interactive_select() {
             if [[ $i -eq $selected ]]; then
                 # Selected row - inverse video
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}\e[7m> %-8s %-12s %-15s %-35s %s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "${GREEN}\e[7m> %-8s %-12s %-15s %-35s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 else
-                    printf "\e[7m> %-8s %-12s %-15s %-35s %s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "\e[7m> %-8s %-12s %-15s %-35s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 fi
             else
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}  %-8s %-12s %-15s %-35s %s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "${GREEN}  %-8s %-12s %-15s %-35s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 else
-                    printf "  %-8s %-12s %-15s %-35s %s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${commands[$i]}"
+                    printf "  %-8s %-12s %-15s %-35s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 fi
             fi
         done
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | T: Tmux Split | D: Set Default | Esc/Q: Exit${NC}"
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | c: Claude | r: Claude -r | D: Default | Esc/Q: Exit${NC}"
     }
 
-    # Clear screen and draw
-    clear
+    # Draw menu
+    tput cup 0 0
+    tput ed
     draw_menu
 
     # Read keys
@@ -188,19 +191,20 @@ interactive_select() {
             elif [[ -z "$seq" ]]; then
                 # Just Escape
                 tput cnorm
-                clear
                 exit 0
             fi
         elif [[ "$key" == '' ]]; then
-            # Enter key - connect
+            # Enter key - connect with zellij session restore
             tput cnorm
-            clear
             connect "${aliases[$selected]}"
-        elif [[ "$key" == 't' || "$key" == 'T' ]]; then
-            # T key - connect with tmux split
+        elif [[ "$key" == 'c' || "$key" == 'C' ]]; then
+            # c key - connect and start claude
             tput cnorm
-            clear
-            connect "${aliases[$selected]}" "true"
+            connect "${aliases[$selected]}" "claude"
+        elif [[ "$key" == 'r' || "$key" == 'R' ]]; then
+            # r key - connect and start claude -r
+            tput cnorm
+            connect "${aliases[$selected]}" "claude -r"
         elif [[ "$key" == 'd' || "$key" == 'D' ]]; then
             # D key - set default
             set_default "${aliases[$selected]}"
@@ -209,7 +213,6 @@ interactive_select() {
         elif [[ "$key" == 'q' || "$key" == 'Q' ]]; then
             # Q to quit
             tput cnorm
-            clear
             exit 0
         fi
     done
@@ -234,56 +237,10 @@ set_default() {
     echo -e "${GREEN}Default set to: $new_default${NC}"
 }
 
-# Interactive default selection
-select_default_interactive() {
-    local current_default=$(get_default)
-    local aliases=()
-    local descriptions=()
-    local i=1
-
-    echo -e "${BLUE}=== Select Default Connection ===${NC}"
-    echo ""
-
-    # Build list of connections
-    while IFS='|' read -r alias host port user directory command description key; do
-        [[ "$alias" =~ ^#.*$ ]] && continue
-        [[ -z "$alias" ]] && continue
-        [[ "$alias" =~ ^default= ]] && continue
-
-        aliases+=("$alias")
-        descriptions+=("$description")
-
-        if [[ "$alias" == "$current_default" ]]; then
-            printf "${GREEN}%2d) %-10s - %s (current)${NC}\n" "$i" "$alias" "$description"
-        else
-            printf "%2d) %-10s - %s\n" "$i" "$alias" "$description"
-        fi
-        ((i++))
-    done < "$CONFIG_FILE"
-
-    echo ""
-    printf " 0) Cancel\n"
-    echo ""
-
-    read -p "Select [0-$((i-1))]: " selection
-
-    if [[ "$selection" == "0" ]] || [[ -z "$selection" ]]; then
-        echo "Cancelled."
-        exit 0
-    fi
-
-    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection < i )); then
-        set_default "${aliases[$((selection-1))]}"
-    else
-        echo -e "${RED}Invalid selection${NC}"
-        exit 1
-    fi
-}
-
 # Connect to a connection
 connect() {
     local alias="$1"
-    local use_tmux="${2:-false}"
+    local start_command="${2:-}"
 
     # Parse connection
     local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
@@ -293,7 +250,7 @@ connect() {
         exit 1
     fi
 
-    IFS='|' read -r _ host port user directory command description key <<< "$line"
+    IFS='|' read -r _ host port user directory description key <<< "$line"
 
     # Build SSH command
     local ssh_cmd="ssh"
@@ -304,31 +261,35 @@ connect() {
 
     ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
 
-    # Build remote command
+    # Build remote command - use zellij for session persistence
+    local session_name="${alias}"
+    local cd_cmd=""
+    [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
+
     local remote_cmd=""
 
-    if [[ "$use_tmux" == "true" ]] && [[ -n "$command" ]]; then
-        # Tmux split mode: command on top, bash on bottom
-        # If session exists, reattach. Otherwise create new.
-        local session_name="${alias}"
-        local cd_cmd=""
-        [[ -n "$directory" ]] && cd_cmd="cd $directory && "
+    if [[ -n "$start_command" ]]; then
+        # c or r pressed: Create 2-pane layout (command top, bash bottom)
+        # If session exists, attach to it. Otherwise create with layout.
+        local cmd_name="${start_command%% *}"
+        local cmd_args=""
+        if [[ "$start_command" == *" "* ]]; then
+            cmd_args="${start_command#* }"
+        fi
 
-        remote_cmd="if tmux has-session -t ${session_name} 2>/dev/null; then \
-tmux attach -t ${session_name}; \
-else \
-${cd_cmd}tmux new-session -d -s ${session_name} && \
-tmux split-window -h -t ${session_name} && \
-tmux send-keys -t ${session_name}:0.0 '${command}' C-m && \
-tmux select-pane -t ${session_name}:0.0 && \
-tmux attach -t ${session_name}; \
-fi"
-    elif [[ -n "$directory" ]] && [[ -n "$command" ]]; then
-        remote_cmd="cd $directory && $command; exec \$SHELL"
-    elif [[ -n "$directory" ]]; then
-        remote_cmd="cd $directory && exec \$SHELL"
-    elif [[ -n "$command" ]]; then
-        remote_cmd="$command; exec \$SHELL"
+        # Build layout file content
+        local layout_content=""
+        if [[ -n "$cmd_args" ]]; then
+            layout_content='layout { pane split_direction="vertical" { pane command="'"${cmd_name}"'" { args "'"${cmd_args}"'" } ; pane focus=true } }'
+        else
+            layout_content='layout { pane split_direction="vertical" { pane command="'"${cmd_name}"'" ; pane focus=true } }'
+        fi
+
+        # Create layout file first, then try attach or create new
+        remote_cmd="${cd_cmd}mkdir -p /tmp/sm-layouts; printf '%s\n' '${layout_content}' > /tmp/sm-layouts/${session_name}.kdl; zellij attach ${session_name} || zellij --session ${session_name} --layout /tmp/sm-layouts/${session_name}.kdl"
+    else
+        # Enter pressed: Simple session, attach or create
+        remote_cmd="${cd_cmd}zellij attach ${session_name} -c"
     fi
 
     echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
@@ -338,22 +299,15 @@ fi"
         echo -e "${BLUE}Directory: $directory${NC}"
     fi
 
-    if [[ -n "$command" ]]; then
-        echo -e "${BLUE}Command: $command${NC}"
+    if [[ -n "$start_command" ]]; then
+        echo -e "${YELLOW}Starting: $start_command (top pane)${NC}"
     fi
 
-    if [[ "$use_tmux" == "true" ]]; then
-        echo -e "${YELLOW}Tmux split mode: command top, bash bottom${NC}"
-    fi
-
+    echo -e "${BLUE}Session: zellij ${session_name}${NC}"
     echo ""
 
     # Execute
-    if [[ -n "$remote_cmd" ]]; then
-        exec $ssh_cmd -t "$remote_cmd"
-    else
-        exec $ssh_cmd
-    fi
+    exec $ssh_cmd -t "$remote_cmd"
 }
 
 # Main
@@ -369,16 +323,15 @@ main() {
             # smd = connect to default (quick access)
             local default_conn=$(get_default)
             if [[ -n "$default_conn" ]]; then
-                # Check for -t flag
-                if [[ "${1:-}" == "-t" ]] || [[ "${1:-}" == "--tmux" ]]; then
-                    connect "$default_conn" "true"
-                else
-                    connect "$default_conn"
-                fi
+                connect "$default_conn"
             else
                 echo -e "${RED}No default connection set. Use 'sm set <alias>' to set one.${NC}"
                 exit 1
             fi
+            ;;
+        sml)
+            # sml = list connections
+            list_connections
             ;;
         sm)
             # sm with arguments
@@ -393,22 +346,9 @@ main() {
                     exit 1
                 fi
                 set_default "$2"
-            elif [[ "$1" == "-t" ]] || [[ "$1" == "--tmux" ]]; then
-                # sm -t = default connection with tmux
-                local default_conn=$(get_default)
-                if [[ -n "$default_conn" ]]; then
-                    connect "$default_conn" "true"
-                else
-                    echo -e "${RED}No default connection set${NC}"
-                    exit 1
-                fi
             else
-                # Direct connection by alias, check for -t flag
-                if [[ "${2:-}" == "-t" ]] || [[ "${2:-}" == "--tmux" ]]; then
-                    connect "$1" "true"
-                else
-                    connect "$1"
-                fi
+                # Direct connection by alias
+                connect "$1"
             fi
             ;;
         *)
