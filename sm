@@ -15,6 +15,19 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Reset terminal to sane state (fixes mouse reporting leaks after SSH disconnect)
+reset_terminal() {
+    # Disable all mouse reporting modes
+    printf '\e[?1000l\e[?1002l\e[?1003l\e[?1006l' 2>/dev/null
+    # Show cursor
+    tput cnorm 2>/dev/null
+    # Reset terminal to sane state
+    stty sane 2>/dev/null
+}
+
+# Command to ensure zellij mouse_mode is disabled on remote (prepend to remote_cmd)
+ZELLIJ_MOUSE_FIX='mkdir -p ~/.config/zellij 2>/dev/null; grep -q "mouse_mode" ~/.config/zellij/config.kdl 2>/dev/null || echo "mouse_mode false" >> ~/.config/zellij/config.kdl; '
+
 # Initialize config if not exists
 init_config() {
     if [[ ! -d "$CONFIG_DIR" ]]; then
@@ -123,8 +136,7 @@ interactive_select() {
 
     # Hide cursor and setup cleanup
     cleanup() {
-        tput cnorm 2>/dev/null
-        printf '\e[?1000l\e[?1002l\e[?1003l\e[?1006l' 2>/dev/null
+        reset_terminal
     }
     tput civis
     trap cleanup EXIT INT TERM HUP
@@ -279,7 +291,7 @@ list_and_connect() {
         elif [[ "$confirm" == "b" || "$confirm" == "B" ]]; then
             exec "$0"
         fi
-        exec $ssh_cmd -t "${cd_cmd}zellij attach -c ${alias}"
+        $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"; reset_terminal; exit
     fi
 
     # Build session array
@@ -296,8 +308,7 @@ list_and_connect() {
 
     # Hide cursor and setup cleanup
     cleanup() {
-        tput cnorm 2>/dev/null
-        printf '\e[?1000l\e[?1002l\e[?1003l\e[?1006l' 2>/dev/null
+        reset_terminal
     }
     tput civis
     trap cleanup EXIT INT TERM HUP
@@ -378,11 +389,11 @@ list_and_connect() {
 
             if [[ "$selected_session" == "[NEW]"* ]]; then
                 echo -e "${GREEN}Creating/attaching session '$alias'...${NC}"
-                exec $ssh_cmd -t "${cd_cmd}zellij attach -c ${alias}"
+                $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"; reset_terminal; exit
             else
                 local session_name=$(echo "$selected_session" | awk '{print $1}')
                 echo -e "${GREEN}Connecting to session '$session_name'...${NC}"
-                exec $ssh_cmd -t "${cd_cmd}zellij attach ${session_name}"
+                $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach ${session_name}"; reset_terminal; exit
             fi
         elif [[ "$key" == 'q' || "$key" == 'Q' ]]; then
             # Q - back to main menu
@@ -435,8 +446,8 @@ connect_reset() {
     echo ""
 
     # Delete session with force (ignore errors) and create fresh
-    local remote_cmd="zellij delete-session ${session_name} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${session_name}"
-    exec $ssh_cmd -t "$remote_cmd"
+    local remote_cmd="${ZELLIJ_MOUSE_FIX}zellij delete-session ${session_name} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${session_name}"
+    $ssh_cmd -t "$remote_cmd"; reset_terminal; exit
 }
 
 # Connect to a connection
@@ -468,7 +479,7 @@ connect() {
     [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
 
     # Attach or create session (try attach first, create if not exists)
-    local remote_cmd="${cd_cmd}zellij attach -c ${session_name}"
+    local remote_cmd="${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${session_name}"
 
     echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
     echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
@@ -480,8 +491,9 @@ connect() {
     echo -e "${BLUE}Session: zellij ${session_name}${NC}"
     echo ""
 
-    # Execute
-    exec $ssh_cmd -t "$remote_cmd"
+    # Execute SSH and reset terminal after disconnect
+    $ssh_cmd -t "$remote_cmd"
+    reset_terminal
 }
 
 # Main
