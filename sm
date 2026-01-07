@@ -29,6 +29,10 @@ reset_terminal() {
 # No mouse_mode fix needed - use Shift+RightClick for paste in terminal
 ZELLIJ_MOUSE_FIX=''
 
+# rmate reverse port forwarding (allows editing remote files with local editor)
+# Usage on server: rmate filename.txt
+RMATE_FORWARD='-R 52698:localhost:52698'
+
 # Initialize config if not exists
 init_config() {
     if [[ ! -d "$CONFIG_DIR" ]]; then
@@ -294,7 +298,7 @@ list_and_connect() {
     if [[ -n "$key" ]]; then
         ssh_cmd="$ssh_cmd -i $key"
     fi
-    ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
+    ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
 
     local cd_cmd=""
     [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
@@ -484,7 +488,7 @@ connect_reset() {
     if [[ -n "$key" ]]; then
         ssh_cmd="$ssh_cmd -i $key"
     fi
-    ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
+    ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
 
     local session_name="${alias}"
     local cd_cmd=""
@@ -545,7 +549,7 @@ connect() {
         ssh_cmd="$ssh_cmd -i $key"
     fi
 
-    ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
+    ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
 
     # Build remote command - use zellij for session persistence
     local session_name="${alias}"
@@ -593,7 +597,7 @@ connect_auth() {
 
     # Add port forwarding for authentication
     ssh_cmd="$ssh_cmd -L 1455:localhost:1455"
-    ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
+    ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
 
     # Build remote command - use zellij for session persistence
     local session_name="${alias}"
