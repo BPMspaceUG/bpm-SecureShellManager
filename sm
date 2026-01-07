@@ -26,8 +26,8 @@ reset_terminal() {
     stty sane 2>/dev/null
 }
 
-# Command to ensure zellij mouse_mode is disabled on remote (prepend to remote_cmd)
-ZELLIJ_MOUSE_FIX='mkdir -p ~/.config/zellij 2>/dev/null; sed -i "/mouse_mode/d" ~/.config/zellij/config.kdl 2>/dev/null; echo "mouse_mode false" >> ~/.config/zellij/config.kdl; '
+# No mouse_mode fix needed - use Shift+RightClick for paste in terminal
+ZELLIJ_MOUSE_FIX=''
 
 # Initialize config if not exists
 init_config() {
