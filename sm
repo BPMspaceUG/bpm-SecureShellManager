@@ -7,6 +7,7 @@ set -uo pipefail
 
 CONFIG_DIR="${HOME}/.config/sm"
 CONFIG_FILE="${CONFIG_DIR}/connections.conf"
+INTERACTIVE_MODE=0
 
 # Colors
 RED='\033[0;31m'
@@ -26,7 +27,7 @@ reset_terminal() {
 }
 
 # Command to ensure zellij mouse_mode is disabled on remote (prepend to remote_cmd)
-ZELLIJ_MOUSE_FIX='mkdir -p ~/.config/zellij 2>/dev/null; grep -q "mouse_mode" ~/.config/zellij/config.kdl 2>/dev/null || echo "mouse_mode false" >> ~/.config/zellij/config.kdl; '
+ZELLIJ_MOUSE_FIX='mkdir -p ~/.config/zellij 2>/dev/null; sed -i "/mouse_mode/d" ~/.config/zellij/config.kdl 2>/dev/null; echo "mouse_mode false" >> ~/.config/zellij/config.kdl; '
 
 # Initialize config if not exists
 init_config() {
@@ -100,6 +101,7 @@ list_connections() {
 
 # Interactive selection with arrow keys
 interactive_select() {
+    INTERACTIVE_MODE=1
     local default_conn=$(get_default)
     local aliases=()
     local hostaliases=()
@@ -136,6 +138,7 @@ interactive_select() {
 
     # Hide cursor and setup cleanup
     cleanup() {
+        INTERACTIVE_MODE=0
         reset_terminal
     }
     tput civis
@@ -175,10 +178,15 @@ interactive_select() {
         echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | L: List Sessions | R: Reset | D: Default | Esc/Q: Exit${NC}"
     }
 
+    redraw_menu() {
+        tput civis
+        tput cup 0 0
+        tput ed
+        draw_menu
+    }
+
     # Draw menu
-    tput cup 0 0
-    tput ed
-    draw_menu
+    redraw_menu
 
     # Read keys
     while true; do
@@ -213,14 +221,17 @@ interactive_select() {
             # Enter key - connect with zellij session restore
             tput cnorm
             connect "${aliases[$selected]}"
+            redraw_menu
         elif [[ "$key" == 'r' || "$key" == 'R' ]]; then
             # R key - reset session (delete and create fresh)
             tput cnorm
             connect_reset "${aliases[$selected]}"
+            redraw_menu
         elif [[ "$key" == 'l' || "$key" == 'L' ]]; then
             # L key - list sessions on server and connect
             tput cnorm
             list_and_connect "${aliases[$selected]}"
+            redraw_menu
         elif [[ "$key" == 'd' || "$key" == 'D' ]]; then
             # D key - set default
             set_default "${aliases[$selected]}"
@@ -256,13 +267,19 @@ set_default() {
 # List sessions on server and connect to selected one
 list_and_connect() {
     local alias="$1"
+    local stay_interactive=0
+    [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
     # Parse connection
     local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
 
     if [[ -z "$line" ]]; then
         echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        exit 1
+        if [[ $stay_interactive -eq 1 ]]; then
+            return 1
+        else
+            exit 1
+        fi
     fi
 
     IFS='|' read -r _ host port user directory description key <<< "$line"
@@ -287,11 +304,25 @@ list_and_connect() {
         echo -e "${RED}No sessions found on server.${NC}"
         read -p "Create new session '$alias'? [Y/n/b=back] " confirm
         if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
-            exit 0
+            if [[ $stay_interactive -eq 1 ]]; then
+                return 0
+            else
+                exit 0
+            fi
         elif [[ "$confirm" == "b" || "$confirm" == "B" ]]; then
-            exec "$0"
+            if [[ $stay_interactive -eq 1 ]]; then
+                return 0
+            else
+                exit 0
+            fi
         fi
-        $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"; reset_terminal; exit
+        $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"
+        reset_terminal
+        if [[ $stay_interactive -eq 1 ]]; then
+            return 0
+        else
+            exit 0
+        fi
     fi
 
     # Build session array
@@ -378,9 +409,13 @@ list_and_connect() {
                 fi
                 draw_sessions
             elif [[ -z "$seq" ]]; then
-                # Escape - back to main menu
+                # Escape - back
                 tput cnorm
-                exec "$0"
+                if [[ $stay_interactive -eq 1 ]]; then
+                    return 0
+                else
+                    exit 0
+                fi
             fi
         elif [[ "$key" == '' ]]; then
             # Enter - connect
@@ -388,17 +423,32 @@ list_and_connect() {
             local selected_session="${session_array[$selected]}"
 
             if [[ "$selected_session" == "[NEW]"* ]]; then
-                echo -e "${GREEN}Creating/attaching session '$alias'...${NC}"
-                $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"; reset_terminal; exit
+                echo -e "${GREEN}Creating fresh session '$alias'...${NC}"
+                connect_reset "$alias" "force"
+                if [[ $stay_interactive -eq 1 ]]; then
+                    return 0
+                else
+                    exit 0
+                fi
             else
                 local session_name=$(echo "$selected_session" | awk '{print $1}')
                 echo -e "${GREEN}Connecting to session '$session_name'...${NC}"
-                $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach ${session_name}"; reset_terminal; exit
+                $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach ${session_name}"
+                reset_terminal
+                if [[ $stay_interactive -eq 1 ]]; then
+                    return 0
+                else
+                    exit 0
+                fi
             fi
         elif [[ "$key" == 'q' || "$key" == 'Q' ]]; then
             # Q - back to main menu
             tput cnorm
-            exec "$0"
+            if [[ $stay_interactive -eq 1 ]]; then
+                return 0
+            else
+                exit 0
+            fi
         fi
     done
 }
@@ -406,13 +456,20 @@ list_and_connect() {
 # Reset and connect (delete old session, create fresh)
 connect_reset() {
     local alias="$1"
+    local force_mode="${2:-}"
+    local stay_interactive=0
+    [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
     # Parse connection
     local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
 
     if [[ -z "$line" ]]; then
         echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        exit 1
+        if [[ $stay_interactive -eq 1 ]]; then
+            return 1
+        else
+            exit 1
+        fi
     fi
 
     IFS='|' read -r _ host port user directory description key <<< "$line"
@@ -434,10 +491,16 @@ connect_reset() {
     # Check if session exists (strip ANSI codes for matching)
     if $ssh_cmd "zellij list-sessions 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -q '${session_name}'"; then
         echo -e "${RED}Session '${session_name}' exists!${NC}"
-        read -p "Delete and create fresh? [y/N] " confirm
-        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-            echo "Cancelled."
-            exit 0
+        if [[ "$force_mode" != "force" ]]; then
+            read -p "Delete and create fresh? [y/N] " confirm
+            if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+                echo "Cancelled."
+                if [[ $stay_interactive -eq 1 ]]; then
+                    return 0
+                else
+                    exit 0
+                fi
+            fi
         fi
         echo -e "${YELLOW}Deleting and recreating session...${NC}"
     else
@@ -447,7 +510,13 @@ connect_reset() {
 
     # Delete session with force (ignore errors) and create fresh
     local remote_cmd="${ZELLIJ_MOUSE_FIX}zellij delete-session ${session_name} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${session_name}"
-    $ssh_cmd -t "$remote_cmd"; reset_terminal; exit
+    $ssh_cmd -t "$remote_cmd"
+    reset_terminal
+    if [[ $stay_interactive -eq 1 ]]; then
+        return 0
+    else
+        exit 0
+    fi
 }
 
 # Connect to a connection
