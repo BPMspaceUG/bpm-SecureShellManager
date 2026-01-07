@@ -175,7 +175,7 @@ interactive_select() {
         done
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | L: List Sessions | R: Reset | D: Default | Esc/Q: Exit${NC}"
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | A: Auth (port 1455) | L: List | R: Reset | D: Default | Q: Exit${NC}"
     }
 
     redraw_menu() {
@@ -221,6 +221,11 @@ interactive_select() {
             # Enter key - connect with zellij session restore
             tput cnorm
             connect "${aliases[$selected]}"
+            redraw_menu
+        elif [[ "$key" == 'a' || "$key" == 'A' ]]; then
+            # A key - Auth mode with port forwarding (1455)
+            tput cnorm
+            connect_auth "${aliases[$selected]}"
             redraw_menu
         elif [[ "$key" == 'r' || "$key" == 'R' ]]; then
             # R key - reset session (delete and create fresh)
@@ -561,8 +566,129 @@ connect() {
     echo ""
 
     # Execute SSH and reset terminal after disconnect
-    $ssh_cmd -t "$remote_cmd"
+    run_ssh "$ssh_cmd" "$remote_cmd" "$user" "$host" "$port"
     reset_terminal
+}
+
+# Connect with port forwarding for authentication (port 1455)
+connect_auth() {
+    local alias="$1"
+
+    # Parse connection
+    local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
+
+    if [[ -z "$line" ]]; then
+        echo -e "${RED}Error: Connection '$alias' not found${NC}"
+        exit 1
+    fi
+
+    IFS='|' read -r _ host port user directory description key <<< "$line"
+
+    # Build SSH command with port forwarding
+    local ssh_cmd="ssh"
+
+    if [[ -n "$key" ]]; then
+        ssh_cmd="$ssh_cmd -i $key"
+    fi
+
+    # Add port forwarding for authentication
+    ssh_cmd="$ssh_cmd -L 1455:localhost:1455"
+    ssh_cmd="$ssh_cmd -p $port ${user}@${host}"
+
+    # Build remote command - use zellij for session persistence
+    local session_name="${alias}"
+    local cd_cmd=""
+    [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
+
+    # Attach or create session
+    local remote_cmd="${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${session_name}"
+
+    echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
+    echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
+    echo -e "${YELLOW}Port Forward: localhost:1455 -> remote:1455${NC}"
+
+    if [[ -n "$directory" ]]; then
+        echo -e "${BLUE}Directory: $directory${NC}"
+    fi
+
+    echo -e "${BLUE}Session: zellij ${session_name}${NC}"
+    echo ""
+
+    # Execute SSH with port forwarding
+    run_ssh "$ssh_cmd" "$remote_cmd" "$user" "$host" "$port"
+    reset_terminal
+}
+
+# Run SSH with detailed error handling
+# Args: ssh_cmd, remote_cmd, user, host, port
+run_ssh() {
+    local ssh_cmd="$1"
+    local remote_cmd="$2"
+    local user="$3"
+    local host="$4"
+    local port="$5"
+
+    # Run SSH and capture exit code
+    set +e
+    $ssh_cmd -t "$remote_cmd"
+    local exit_code=$?
+    set -e
+
+    # Handle common SSH errors
+    if [[ $exit_code -ne 0 ]]; then
+        echo ""
+        echo -e "${RED}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${RED}SSH Connection Failed (Exit code: $exit_code)${NC}"
+        echo -e "${RED}═══════════════════════════════════════════════════════════════${NC}"
+
+        case $exit_code in
+            1)
+                echo -e "${YELLOW}Generic error. Possible causes:${NC}"
+                echo "  • Wrong hostname or IP address"
+                echo "  • Network unreachable"
+                echo "  • SSH key passphrase incorrect"
+                ;;
+            2)
+                echo -e "${YELLOW}SSH client error. Possible causes:${NC}"
+                echo "  • Invalid SSH options"
+                echo "  • Configuration file syntax error"
+                ;;
+            255)
+                echo -e "${YELLOW}Connection refused or failed. Possible causes:${NC}"
+                echo ""
+                echo -e "${BLUE}Server-side (sshd) issues:${NC}"
+                echo "  • sshd not running: sudo systemctl start sshd"
+                echo "  • sshd not enabled: sudo systemctl enable sshd"
+                echo "  • Wrong port: check /etc/ssh/sshd_config 'Port' setting"
+                echo "  • Firewall blocking: sudo ufw allow ${port}/tcp"
+                echo ""
+                echo -e "${BLUE}Authentication issues:${NC}"
+                echo "  • User '${user}' doesn't exist on server"
+                echo "  • SSH key not in ~/.ssh/authorized_keys"
+                echo "  • PasswordAuthentication disabled in sshd_config"
+                echo "  • PubkeyAuthentication disabled in sshd_config"
+                echo ""
+                echo -e "${BLUE}Port forwarding issues (if using -L):${NC}"
+                echo "  • AllowTcpForwarding must be 'yes' in sshd_config"
+                echo "  • GatewayPorts may need to be 'yes'"
+                echo "  • Port 1455 already in use locally: lsof -i :1455"
+                echo ""
+                echo -e "${BLUE}To check sshd config on server:${NC}"
+                echo "  sudo sshd -T | grep -E '(port|allowtcp|pubkey|password)'"
+                ;;
+            *)
+                echo -e "${YELLOW}Unknown error. Check:${NC}"
+                echo "  • Network connectivity: ping ${host}"
+                echo "  • SSH service: ssh -v ${user}@${host}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${BLUE}Debug with: ssh -vvv -p ${port} ${user}@${host}${NC}"
+        echo -e "${RED}═══════════════════════════════════════════════════════════════${NC}"
+
+        read -p "Press Enter to continue..."
+    fi
 }
 
 # Main
