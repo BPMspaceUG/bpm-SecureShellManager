@@ -179,7 +179,7 @@ interactive_select() {
         done
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | A: Auth (port 1455) | L: List | R: Reset | D: Default | Q: Exit${NC}"
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | A: Auth | L: List | H: Hard Reset | D: Default | Q: Exit${NC}"
     }
 
     redraw_menu() {
@@ -231,10 +231,10 @@ interactive_select() {
             tput cnorm
             connect_auth "${aliases[$selected]}"
             redraw_menu
-        elif [[ "$key" == 'r' || "$key" == 'R' ]]; then
-            # R key - reset session (delete and create fresh)
+        elif [[ "$key" == 'h' || "$key" == 'H' ]]; then
+            # H key - hard reset (always delete and create fresh, no questions)
             tput cnorm
-            connect_reset "${aliases[$selected]}"
+            connect_hard_reset "${aliases[$selected]}"
             redraw_menu
         elif [[ "$key" == 'l' || "$key" == 'L' ]]; then
             # L key - list sessions on server and connect
@@ -433,7 +433,7 @@ list_and_connect() {
 
             if [[ "$selected_session" == "[NEW]"* ]]; then
                 echo -e "${GREEN}Creating fresh session '$alias'...${NC}"
-                connect_reset "$alias" "force"
+                connect_hard_reset "$alias"
                 if [[ $stay_interactive -eq 1 ]]; then
                     return 0
                 else
@@ -462,10 +462,9 @@ list_and_connect() {
     done
 }
 
-# Reset and connect (delete old session, create fresh)
-connect_reset() {
+# Hard reset - always delete and create fresh session (no questions asked)
+connect_hard_reset() {
     local alias="$1"
-    local force_mode="${2:-}"
     local stay_interactive=0
     [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
@@ -494,31 +493,12 @@ connect_reset() {
     local cd_cmd=""
     [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
 
-    echo -e "${GREEN}Resetting: $alias ($description)${NC}"
-    echo -e "${YELLOW}Checking for existing session...${NC}"
-
-    # Check if session exists (strip ANSI codes for matching)
-    if $ssh_cmd "zellij list-sessions 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -q '${session_name}'"; then
-        echo -e "${RED}Session '${session_name}' exists!${NC}"
-        if [[ "$force_mode" != "force" ]]; then
-            read -p "Delete and create fresh? [y/N] " confirm
-            if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-                echo "Cancelled."
-                if [[ $stay_interactive -eq 1 ]]; then
-                    return 0
-                else
-                    exit 0
-                fi
-            fi
-        fi
-        echo -e "${YELLOW}Deleting and recreating session...${NC}"
-    else
-        echo -e "${GREEN}No existing session, creating new...${NC}"
-    fi
+    echo -e "${GREEN}Hard Reset: $alias ($description)${NC}"
+    echo -e "${YELLOW}Deleting session '${session_name}' and creating fresh...${NC}"
     echo ""
 
     # Delete session with force (ignore errors) and create fresh
-    local remote_cmd="${ZELLIJ_MOUSE_FIX}zellij delete-session ${session_name} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${session_name}"
+    local remote_cmd="zellij delete-session ${session_name} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${session_name}"
     $ssh_cmd -t "$remote_cmd"
     reset_terminal
     if [[ $stay_interactive -eq 1 ]]; then
