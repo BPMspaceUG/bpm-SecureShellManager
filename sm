@@ -26,7 +26,10 @@ reset_terminal() {
     stty sane 2>/dev/null
 }
 
-# No mouse_mode fix needed - use Shift+RightClick for paste in terminal
+# Zellij mouse configuration
+# - Pane selection with mouse requires mouse_mode true (zellij default)
+# - Shift+RightClick paste depends on terminal emulator (Windows Terminal: use Ctrl+Shift+V)
+# - Ctrl+V paste works via zellij clipboard passthrough
 ZELLIJ_MOUSE_FIX=''
 
 # rmate reverse port forwarding (allows editing remote files with local editor)
@@ -179,7 +182,7 @@ interactive_select() {
         done
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | A: Auth | L: List | H: Hard Reset | D: Default | Q: Exit${NC}"
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit${NC}"
     }
 
     redraw_menu() {
@@ -231,6 +234,11 @@ interactive_select() {
             tput cnorm
             connect_auth "${aliases[$selected]}"
             redraw_menu
+        elif [[ "$key" == 'p' || "$key" == 'P' ]]; then
+            # P key - create new parallel session
+            tput cnorm
+            connect_parallel "${aliases[$selected]}"
+            redraw_menu
         elif [[ "$key" == 'h' || "$key" == 'H' ]]; then
             # H key - hard reset (always delete and create fresh, no questions)
             tput cnorm
@@ -273,9 +281,91 @@ set_default() {
     echo -e "${GREEN}Default set to: $new_default${NC}"
 }
 
+# === Session Helper Functions ===
+
+# Get all sessions for an alias (supports parallel sessions like alias, alias_2, alias_3)
+# Runs locally - queries remote server via SSH
+get_sessions_for_alias() {
+    local alias="$1"
+    local ssh_cmd="$2"
+    # Get sessions from remote, strip ANSI codes, filter by alias pattern
+    $ssh_cmd "zellij list-sessions 2>/dev/null" 2>/dev/null | \
+        sed 's/\x1b\[[0-9;]*m//g' | \
+        grep -E "^${alias}(_[0-9]+)?(\s|$)" | \
+        awk '{print $1}'
+}
+
+# Count sessions for an alias
+count_sessions_for_alias() {
+    local alias="$1"
+    local ssh_cmd="$2"
+    get_sessions_for_alias "$alias" "$ssh_cmd" | grep -c . || echo "0"
+}
+
+# Get next parallel session name
+get_next_session_name() {
+    local alias="$1"
+    local ssh_cmd="$2"
+    local sessions
+    sessions=$(get_sessions_for_alias "$alias" "$ssh_cmd")
+    local count
+    count=$(echo "$sessions" | grep -c . || echo "0")
+
+    if [[ $count -eq 0 ]]; then
+        echo "$alias"
+    else
+        # Find highest number suffix and increment
+        local max=1
+        while IFS= read -r s; do
+            if [[ "$s" =~ _([0-9]+)$ ]]; then
+                local n="${BASH_REMATCH[1]}"
+                (( n >= max )) && max=$((n + 1))
+            fi
+        done <<< "$sessions"
+        echo "${alias}_${max}"
+    fi
+}
+
+# Check if a specific session is exited/dead
+is_session_exited() {
+    local session="$1"
+    local ssh_cmd="$2"
+    $ssh_cmd "zellij list-sessions 2>/dev/null" 2>/dev/null | grep -q "^${session}.*EXITED"
+}
+
+# Cleanup dead/exited sessions for an alias
+cleanup_dead_sessions() {
+    local alias="$1"
+    local ssh_cmd="$2"
+    local sessions
+    sessions=$($ssh_cmd "zellij list-sessions 2>/dev/null" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^(${alias}(_[0-9]+)?).*EXITED ]]; then
+            local dead_session="${BASH_REMATCH[1]}"
+            $ssh_cmd "zellij delete-session ${dead_session} --force 2>/dev/null" 2>/dev/null || true
+        fi
+    done <<< "$sessions"
+}
+
+# Delete all sessions for an alias
+delete_all_sessions_for_alias() {
+    local alias="$1"
+    local ssh_cmd="$2"
+    local sessions
+    sessions=$(get_sessions_for_alias "$alias" "$ssh_cmd")
+
+    while IFS= read -r session; do
+        [[ -n "$session" ]] && $ssh_cmd "zellij delete-session ${session} --force 2>/dev/null" 2>/dev/null || true
+    done <<< "$sessions"
+}
+
+# === End Session Helper Functions ===
+
 # List sessions on server and connect to selected one
 list_and_connect() {
     local alias="$1"
+    local auth_mode="${2:-}"  # Optional: "auth" for port forwarding mode
     local stay_interactive=0
     [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
@@ -293,12 +383,19 @@ list_and_connect() {
 
     IFS='|' read -r _ host port user directory description key <<< "$line"
 
-    # Build SSH command
+    # Build SSH command (base without auth port)
     local ssh_cmd="ssh"
     if [[ -n "$key" ]]; then
         ssh_cmd="$ssh_cmd -i $key"
     fi
     ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
+
+    # Build SSH command with auth port if needed
+    local ssh_cmd_auth="ssh"
+    if [[ -n "$key" ]]; then
+        ssh_cmd_auth="$ssh_cmd_auth -i $key"
+    fi
+    ssh_cmd_auth="$ssh_cmd_auth -L 1455:localhost:1455 $RMATE_FORWARD -p $port ${user}@${host}"
 
     local cd_cmd=""
     [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
@@ -306,11 +403,12 @@ list_and_connect() {
     echo -e "${GREEN}=== Sessions on $alias ($description) ===${NC}"
     echo -e "${YELLOW}Fetching sessions...${NC}"
 
-    # Get sessions from server (strip ANSI color codes)
-    local sessions=$($ssh_cmd "zellij list-sessions 2>/dev/null" | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$")
+    # Get sessions from server (strip ANSI color codes) - filter by alias pattern
+    local sessions
+    sessions=$(get_sessions_for_alias "$alias" "$ssh_cmd")
 
     if [[ -z "$sessions" ]]; then
-        echo -e "${RED}No sessions found on server.${NC}"
+        echo -e "${RED}No sessions found for '$alias'.${NC}"
         read -p "Create new session '$alias'? [Y/n/b=back] " confirm
         if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
             if [[ $stay_interactive -eq 1 ]]; then
@@ -325,7 +423,9 @@ list_and_connect() {
                 exit 0
             fi
         fi
-        $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"
+        local final_ssh="$ssh_cmd"
+        [[ "$auth_mode" == "auth" ]] && final_ssh="$ssh_cmd_auth"
+        $final_ssh -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"
         reset_terminal
         if [[ $stay_interactive -eq 1 ]]; then
             return 0
@@ -334,14 +434,14 @@ list_and_connect() {
         fi
     fi
 
-    # Build session array
+    # Build session array from filtered sessions
     local session_array=()
     while IFS= read -r session; do
-        session_array+=("$session")
+        [[ -n "$session" ]] && session_array+=("$session")
     done <<< "$sessions"
 
-    # Add "New session" option
-    session_array+=("[NEW] Create session '$alias'")
+    # Add "New parallel session" option
+    session_array+=("[NEW] Create parallel session")
 
     local count=${#session_array[@]}
     local selected=0
@@ -358,7 +458,10 @@ list_and_connect() {
         tput cup 0 0
         tput ed
 
-        echo -e "${GREEN}=== Sessions on $alias ($description) ===${NC}"
+        echo -e "${GREEN}=== Sessions for $alias ($description) ===${NC}"
+        if [[ "$auth_mode" == "auth" ]]; then
+            echo -e "${YELLOW}[Auth Mode: Port 1455 forwarding enabled]${NC}"
+        fi
         echo ""
 
         for i in "${!session_array[@]}"; do
@@ -366,13 +469,14 @@ list_and_connect() {
             local is_new=false
             local is_exited=false
             [[ "$session" == "[NEW]"* ]] && is_new=true
-            [[ "$session" == *"(EXITED)"* ]] && is_exited=true
+            # Check if session is exited by querying full session list
+            $ssh_cmd "zellij list-sessions 2>/dev/null" 2>/dev/null | grep -q "^${session}.*EXITED" && is_exited=true
 
             if [[ $i -eq $selected ]]; then
                 if [[ "$is_new" == "true" ]]; then
                     printf "${BLUE}\e[7m> %s\e[27m${NC}\n" "$session"
                 elif [[ "$is_exited" == "true" ]]; then
-                    printf "${RED}\e[7m> %s\e[27m${NC}\n" "$session"
+                    printf "${RED}\e[7m> %s (EXITED)\e[27m${NC}\n" "$session"
                 else
                     printf "${GREEN}\e[7m> %s\e[27m${NC}\n" "$session"
                 fi
@@ -380,7 +484,7 @@ list_and_connect() {
                 if [[ "$is_new" == "true" ]]; then
                     printf "${BLUE}  %s${NC}\n" "$session"
                 elif [[ "$is_exited" == "true" ]]; then
-                    printf "${RED}  %s${NC}\n" "$session"
+                    printf "${RED}  %s (EXITED)${NC}\n" "$session"
                 else
                     printf "${GREEN}  %s${NC}\n" "$session"
                 fi
@@ -388,7 +492,7 @@ list_and_connect() {
         done
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | Esc/Q: Cancel${NC}"
+        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | H: Hard Reset | Q: Back${NC}"
     }
 
     tput cup 0 0
@@ -427,23 +531,48 @@ list_and_connect() {
                 fi
             fi
         elif [[ "$key" == '' ]]; then
-            # Enter - connect
+            # Enter - connect to selected or create new parallel
             tput cnorm
             local selected_session="${session_array[$selected]}"
 
             if [[ "$selected_session" == "[NEW]"* ]]; then
-                echo -e "${GREEN}Creating fresh session '$alias'...${NC}"
-                connect_hard_reset "$alias"
+                echo -e "${GREEN}Creating new parallel session...${NC}"
+                connect_parallel "$alias" "$auth_mode"
                 if [[ $stay_interactive -eq 1 ]]; then
                     return 0
                 else
                     exit 0
                 fi
             else
-                local session_name=$(echo "$selected_session" | awk '{print $1}')
+                local session_name="$selected_session"
                 echo -e "${GREEN}Connecting to session '$session_name'...${NC}"
-                $ssh_cmd -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach ${session_name}"
+                local final_ssh="$ssh_cmd"
+                [[ "$auth_mode" == "auth" ]] && final_ssh="$ssh_cmd_auth"
+                $final_ssh -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach ${session_name}"
                 reset_terminal
+                if [[ $stay_interactive -eq 1 ]]; then
+                    return 0
+                else
+                    exit 0
+                fi
+            fi
+        elif [[ "$key" == 'h' || "$key" == 'H' ]]; then
+            # H - hard reset selected session only
+            local selected_session="${session_array[$selected]}"
+            if [[ "$selected_session" == "[NEW]"* ]]; then
+                # Can't reset [NEW] option, just create parallel
+                tput cnorm
+                echo -e "${GREEN}Creating new parallel session...${NC}"
+                connect_parallel "$alias" "$auth_mode"
+                if [[ $stay_interactive -eq 1 ]]; then
+                    return 0
+                else
+                    exit 0
+                fi
+            else
+                tput cnorm
+                echo -e "${YELLOW}Hard reset session '$selected_session'...${NC}"
+                connect_hard_reset "$alias" "$selected_session"
                 if [[ $stay_interactive -eq 1 ]]; then
                     return 0
                 else
@@ -462,9 +591,11 @@ list_and_connect() {
     done
 }
 
-# Hard reset - always delete and create fresh session (no questions asked)
+# Hard reset - delete session(s) and create fresh
+# If >1 sessions exist, asks user if ALL should be reset
 connect_hard_reset() {
     local alias="$1"
+    local specific_session="${2:-}"  # Optional: reset only this specific session (for submenu H)
     local stay_interactive=0
     [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
@@ -489,16 +620,53 @@ connect_hard_reset() {
     fi
     ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
 
-    local session_name="${alias}"
     local cd_cmd=""
     [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
 
-    echo -e "${GREEN}Hard Reset: $alias ($description)${NC}"
-    echo -e "${YELLOW}Deleting session '${session_name}' and creating fresh...${NC}"
+    # If specific session provided (from submenu H), reset only that one
+    if [[ -n "$specific_session" ]]; then
+        echo -e "${GREEN}Hard Reset: $specific_session${NC}"
+        echo -e "${YELLOW}Deleting session '${specific_session}' and creating fresh...${NC}"
+        echo ""
+        local remote_cmd="zellij delete-session ${specific_session} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${specific_session}"
+        $ssh_cmd -t "$remote_cmd"
+        reset_terminal
+        if [[ $stay_interactive -eq 1 ]]; then
+            return 0
+        else
+            exit 0
+        fi
+    fi
+
+    # Count sessions for this alias
+    local session_count
+    session_count=$(count_sessions_for_alias "$alias" "$ssh_cmd")
+
+    if [[ $session_count -gt 1 ]]; then
+        # Multiple sessions - ask if all should be reset
+        echo -e "${RED}Found $session_count sessions for '$alias':${NC}"
+        get_sessions_for_alias "$alias" "$ssh_cmd" | while read -r s; do echo "  - $s"; done
+        echo ""
+        read -p "Reset ALL $session_count sessions and create 1 fresh? [Y/n/b=back] " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" || "$confirm" == "b" || "$confirm" == "B" ]]; then
+            if [[ $stay_interactive -eq 1 ]]; then
+                return 0
+            else
+                exit 0
+            fi
+        fi
+        # Delete all sessions
+        echo -e "${YELLOW}Deleting all sessions for '$alias'...${NC}"
+        delete_all_sessions_for_alias "$alias" "$ssh_cmd"
+    else
+        echo -e "${GREEN}Hard Reset: $alias ($description)${NC}"
+        echo -e "${YELLOW}Deleting session '${alias}' and creating fresh...${NC}"
+    fi
+
     echo ""
 
-    # Delete session with force (ignore errors) and create fresh
-    local remote_cmd="zellij delete-session ${session_name} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${session_name}"
+    # Create fresh primary session
+    local remote_cmd="zellij delete-session ${alias} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${alias}"
     $ssh_cmd -t "$remote_cmd"
     reset_terminal
     if [[ $stay_interactive -eq 1 ]]; then
@@ -508,97 +676,153 @@ connect_hard_reset() {
     fi
 }
 
-# Connect to a connection
+# Connect to a connection (smart routing based on session count)
 connect() {
     local alias="$1"
+    local auth_mode="${2:-}"  # Optional: "auth" for port forwarding mode
+    local stay_interactive=0
+    [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
     # Parse connection
     local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
 
     if [[ -z "$line" ]]; then
         echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        exit 1
+        if [[ $stay_interactive -eq 1 ]]; then
+            return 1
+        else
+            exit 1
+        fi
+    fi
+
+    IFS='|' read -r _ host port user directory description key <<< "$line"
+
+    # Build SSH command (without -t for session queries)
+    local ssh_cmd="ssh"
+    if [[ -n "$key" ]]; then
+        ssh_cmd="$ssh_cmd -i $key"
+    fi
+    ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
+
+    local cd_cmd=""
+    [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
+
+    # Cleanup dead sessions first
+    echo -e "${YELLOW}Checking sessions...${NC}"
+    cleanup_dead_sessions "$alias" "$ssh_cmd"
+
+    # Count remaining sessions
+    local session_count
+    session_count=$(count_sessions_for_alias "$alias" "$ssh_cmd")
+
+    if [[ $session_count -gt 1 ]]; then
+        # Multiple sessions exist -> go to session submenu
+        echo -e "${BLUE}Found $session_count sessions for $alias${NC}"
+        list_and_connect "$alias" "$auth_mode"
+        return $?
+    fi
+
+    # Get existing session or use primary name
+    local sessions
+    sessions=$(get_sessions_for_alias "$alias" "$ssh_cmd")
+    local session_name
+    if [[ $session_count -eq 1 ]]; then
+        session_name=$(echo "$sessions" | head -1)
+    else
+        session_name="$alias"
+    fi
+
+    # Build final SSH command with auth port forwarding if needed
+    local final_ssh_cmd="$ssh_cmd"
+    if [[ "$auth_mode" == "auth" ]]; then
+        # Rebuild with auth port forwarding
+        final_ssh_cmd="ssh"
+        if [[ -n "$key" ]]; then
+            final_ssh_cmd="$final_ssh_cmd -i $key"
+        fi
+        final_ssh_cmd="$final_ssh_cmd -L 1455:localhost:1455 $RMATE_FORWARD -p $port ${user}@${host}"
+    fi
+
+    # Build remote command
+    local remote_cmd="${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${session_name}"
+
+    echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
+    echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
+    if [[ "$auth_mode" == "auth" ]]; then
+        echo -e "${YELLOW}Port Forward: localhost:1455 -> remote:1455${NC}"
+    fi
+    if [[ -n "$directory" ]]; then
+        echo -e "${BLUE}Directory: $directory${NC}"
+    fi
+    echo -e "${BLUE}Session: zellij ${session_name}${NC}"
+    echo ""
+
+    # Execute SSH and reset terminal after disconnect
+    run_ssh "$final_ssh_cmd" "$remote_cmd" "$user" "$host" "$port"
+    reset_terminal
+}
+
+# Connect with port forwarding for authentication (port 1455)
+# Delegates to connect() with auth mode flag
+connect_auth() {
+    local alias="$1"
+    connect "$alias" "auth"
+}
+
+# Create a new parallel session (e.g., alias_2, alias_3, ...)
+connect_parallel() {
+    local alias="$1"
+    local auth_mode="${2:-}"
+    local stay_interactive=0
+    [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
+
+    # Parse connection
+    local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
+
+    if [[ -z "$line" ]]; then
+        echo -e "${RED}Error: Connection '$alias' not found${NC}"
+        if [[ $stay_interactive -eq 1 ]]; then
+            return 1
+        else
+            exit 1
+        fi
     fi
 
     IFS='|' read -r _ host port user directory description key <<< "$line"
 
     # Build SSH command
     local ssh_cmd="ssh"
-
     if [[ -n "$key" ]]; then
         ssh_cmd="$ssh_cmd -i $key"
     fi
-
+    if [[ "$auth_mode" == "auth" ]]; then
+        ssh_cmd="$ssh_cmd -L 1455:localhost:1455"
+    fi
     ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
 
-    # Build remote command - use zellij for session persistence
-    local session_name="${alias}"
     local cd_cmd=""
     [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
 
-    # Attach or create session (try attach first, create if not exists)
+    # Get next available parallel session name
+    echo -e "${YELLOW}Finding next available session name...${NC}"
+    local session_name
+    session_name=$(get_next_session_name "$alias" "$ssh_cmd")
+
+    # Build remote command
     local remote_cmd="${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${session_name}"
 
-    echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
+    echo -e "${GREEN}Creating parallel session: $alias ($description)${NC}"
     echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
-
+    if [[ "$auth_mode" == "auth" ]]; then
+        echo -e "${YELLOW}Port Forward: localhost:1455 -> remote:1455${NC}"
+    fi
     if [[ -n "$directory" ]]; then
         echo -e "${BLUE}Directory: $directory${NC}"
     fi
-
     echo -e "${BLUE}Session: zellij ${session_name}${NC}"
     echo ""
 
-    # Execute SSH and reset terminal after disconnect
-    run_ssh "$ssh_cmd" "$remote_cmd" "$user" "$host" "$port"
-    reset_terminal
-}
-
-# Connect with port forwarding for authentication (port 1455)
-connect_auth() {
-    local alias="$1"
-
-    # Parse connection
-    local line=$(grep "^${alias}|" "$CONFIG_FILE" 2>/dev/null || echo "")
-
-    if [[ -z "$line" ]]; then
-        echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        exit 1
-    fi
-
-    IFS='|' read -r _ host port user directory description key <<< "$line"
-
-    # Build SSH command with port forwarding
-    local ssh_cmd="ssh"
-
-    if [[ -n "$key" ]]; then
-        ssh_cmd="$ssh_cmd -i $key"
-    fi
-
-    # Add port forwarding for authentication
-    ssh_cmd="$ssh_cmd -L 1455:localhost:1455"
-    ssh_cmd="$ssh_cmd $RMATE_FORWARD -p $port ${user}@${host}"
-
-    # Build remote command - use zellij for session persistence
-    local session_name="${alias}"
-    local cd_cmd=""
-    [[ -n "$directory" ]] && cd_cmd="cd $directory 2>/dev/null; "
-
-    # Attach or create session
-    local remote_cmd="${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${session_name}"
-
-    echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
-    echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
-    echo -e "${YELLOW}Port Forward: localhost:1455 -> remote:1455${NC}"
-
-    if [[ -n "$directory" ]]; then
-        echo -e "${BLUE}Directory: $directory${NC}"
-    fi
-
-    echo -e "${BLUE}Session: zellij ${session_name}${NC}"
-    echo ""
-
-    # Execute SSH with port forwarding
+    # Execute SSH
     run_ssh "$ssh_cmd" "$remote_cmd" "$user" "$host" "$port"
     reset_terminal
 }
