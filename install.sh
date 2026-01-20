@@ -1,33 +1,96 @@
 #!/usr/bin/env bash
 # SM - SSH Manager Installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-SecureShellManager/main/install.sh | bash
+#        ./install.sh --user | --global | --all
 
 set -euo pipefail
 
-BIN_DIR="${HOME}/.local/bin"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="BPMspaceUG/bpm-SecureShellManager"
+VERSION="${SM_VERSION:-main}"
+BASE_URL="https://raw.githubusercontent.com/${REPO}/${VERSION}"
 
-echo "Installing SM - SSH Manager..."
+USER_DIR="${HOME}/.local/bin"
+GLOBAL_DIR="/usr/local/bin"
 
-# Create bin directory if needed
-mkdir -p "$BIN_DIR"
+# Check if running from local repo
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" && pwd 2>/dev/null || echo "")"
+LOCAL_SM="${SCRIPT_DIR}/sm"
 
-# Copy main script
-cp "${SCRIPT_DIR}/sm" "${BIN_DIR}/sm"
-chmod +x "${BIN_DIR}/sm"
+# Parse arguments
+MODE=""
+for arg in "$@"; do
+    case "$arg" in
+        --user)   MODE="user" ;;
+        --global) MODE="global" ;;
+        --all)    MODE="all" ;;
+        --help|-h)
+            echo "Usage: $0 [--user|--global|--all]"
+            echo "  --user    Install to ~/.local/bin"
+            echo "  --global  Install to /usr/local/bin (requires sudo)"
+            echo "  --all     Install to both locations"
+            echo "  (none)    Interactive prompt"
+            exit 0
+            ;;
+    esac
+done
 
-# Create symlink for smd (default connection)
-ln -sf "${BIN_DIR}/sm" "${BIN_DIR}/smd"
+# Interactive prompt if no flag
+if [[ -z "$MODE" ]]; then
+    echo "Where would you like to install SM?"
+    echo "  1) User only (~/.local/bin)"
+    echo "  2) System-wide (/usr/local/bin) - requires sudo"
+    echo "  3) Both locations"
+    read -rp "Choice [1-3]: " choice
+    case "$choice" in
+        1) MODE="user" ;;
+        2) MODE="global" ;;
+        3) MODE="all" ;;
+        *) echo "Invalid choice"; exit 1 ;;
+    esac
+fi
 
-echo "Installed to ${BIN_DIR}/sm"
-echo "Symlink created: smd"
+install_to() {
+    local dir="$1"
+    mkdir -p "$dir"
+
+    if [[ -n "$SCRIPT_DIR" && -f "$LOCAL_SM" ]]; then
+        cp "$LOCAL_SM" "${dir}/sm"
+    else
+        curl -fsSL -o "${dir}/sm" "${BASE_URL}/sm"
+    fi
+    chmod +x "${dir}/sm"
+    ln -sf "${dir}/sm" "${dir}/smd"
+    ln -sf "${dir}/sm" "${dir}/sml"
+
+    echo "✓ Installed to ${dir}/sm"
+
+    if [[ ":$PATH:" != *":${dir}:"* ]]; then
+        echo "  ⚠ Add to PATH: export PATH=\"\${PATH}:${dir}\""
+    fi
+}
+
+# Execute based on mode
+case "$MODE" in
+    user)
+        install_to "$USER_DIR"
+        ;;
+    global)
+        if [[ $EUID -ne 0 ]]; then
+            echo "Error: --global requires sudo"
+            exit 1
+        fi
+        install_to "$GLOBAL_DIR"
+        ;;
+    all)
+        install_to "$USER_DIR"
+        if [[ $EUID -eq 0 ]]; then
+            install_to "$GLOBAL_DIR"
+        else
+            echo ""
+            echo "Note: Run with sudo to also install to $GLOBAL_DIR"
+        fi
+        ;;
+esac
+
 echo ""
-echo "Make sure ${BIN_DIR} is in your PATH"
-echo ""
-echo "Usage:"
-echo "  sm              - Interactive selection (arrow keys)"
-echo "  sm <alias>      - Connect to specific alias"
-echo "  sm <alias> -t   - Connect with tmux split (command + shell)"
-echo "  sm list         - Show all connections"
-echo "  sm set <alias>  - Set default connection"
-echo "  smd             - Quick connect to default"
-echo "  smd -t          - Default connection with tmux split"
+echo "Commands: sm, smd (default), sml (list)"
