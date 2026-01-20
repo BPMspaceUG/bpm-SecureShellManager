@@ -12,9 +12,12 @@ BASE_URL="https://raw.githubusercontent.com/${REPO}/${VERSION}"
 USER_DIR="${HOME}/.local/bin"
 GLOBAL_DIR="/usr/local/bin"
 
-# Check if running from local repo
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" && pwd 2>/dev/null || echo "")"
-LOCAL_SM="${SCRIPT_DIR}/sm"
+# Check if running from local repo (BASH_SOURCE unset when piped)
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo "")"
+fi
+LOCAL_SM="${SCRIPT_DIR:+${SCRIPT_DIR}/sm}"
 
 # Parse arguments
 MODE=""
