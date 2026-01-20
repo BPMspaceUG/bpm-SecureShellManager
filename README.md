@@ -24,10 +24,44 @@ sudo mv zellij /usr/local/bin/
 
 ## Installation
 
+### User Install (~/.local/bin)
+
 ```bash
-git clone git@github.com:BPMspaceUG/bpm-SecureShellManager.git
+curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-SecureShellManager/main/install.sh | bash -s -- --user
+```
+
+### System-wide Install (/usr/local/bin)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-SecureShellManager/main/install.sh | sudo bash -s -- --global
+```
+
+### Both Locations
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-SecureShellManager/main/install.sh | sudo bash -s -- --all
+```
+
+### Interactive Mode
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-SecureShellManager/main/install.sh | bash
+```
+
+### Specific Version
+
+```bash
+SM_VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-SecureShellManager/main/install.sh | bash -s -- --user
+```
+
+### Manual / Development
+
+```bash
+git clone https://github.com/BPMspaceUG/bpm-SecureShellManager.git
 cd bpm-SecureShellManager
-./install.sh
+./install.sh          # Interactive
+./install.sh --user   # User only
+./install.sh --all    # Both locations
 ```
 
 Stelle sicher, dass `~/.local/bin` in deinem `PATH` ist:
@@ -152,6 +186,10 @@ default=sm231
 ## Deinstallation
 
 ```bash
+# Quick uninstall
+curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-SecureShellManager/main/uninstall.sh | bash
+
+# Or manual:
 rm ~/.local/bin/sm ~/.local/bin/smd ~/.local/bin/sml
 rm -rf ~/.config/sm  # Optional: Konfiguration löschen
 ```
