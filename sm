@@ -3,6 +3,8 @@
 # Quick SSH connection manager with zellij session persistence
 # Invoke as 'sml' for list mode
 
+SM_VERSION="1.1.0"
+
 set -uo pipefail
 
 CONFIG_DIR="${HOME}/.config/sm"
@@ -299,7 +301,7 @@ get_sessions_for_alias() {
 count_sessions_for_alias() {
     local alias="$1"
     local ssh_cmd="$2"
-    get_sessions_for_alias "$alias" "$ssh_cmd" | grep -c . || echo "0"
+    get_sessions_for_alias "$alias" "$ssh_cmd" | wc -l
 }
 
 # Get next parallel session name
@@ -836,14 +838,29 @@ run_ssh() {
     local host="$4"
     local port="$5"
 
-    # Run SSH and capture exit code
+    # Run SSH and capture exit code + stderr (using temp file for reliable capture)
+    local stderr_file=$(mktemp)
+    trap "rm -f '$stderr_file'" RETURN
+
     set +e
-    $ssh_cmd -t "$remote_cmd"
+    $ssh_cmd -t "$remote_cmd" 2>"$stderr_file"
     local exit_code=$?
     set -e
 
+    local ssh_stderr=$(cat "$stderr_file" 2>/dev/null || echo "")
+
     # Handle common SSH errors
     if [[ $exit_code -ne 0 ]]; then
+        # Reset terminal first (fixes mouse tracking leaks from broken connections)
+        reset_terminal
+
+        # Check for broken pipe (mid-session disconnect) - exit cleanly
+        if [[ "$ssh_stderr" == *"Broken pipe"* ]] || [[ "$ssh_stderr" == *"client_loop"* ]]; then
+            echo ""
+            echo -e "${YELLOW}Connection closed (broken pipe)${NC}"
+            return 0
+        fi
+
         echo ""
         echo -e "${RED}═══════════════════════════════════════════════════════════════${NC}"
         echo -e "${RED}SSH Connection Failed (Exit code: $exit_code)${NC}"

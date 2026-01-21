@@ -52,10 +52,27 @@ if [[ -z "$MODE" ]]; then
     esac
 fi
 
+# Extract version from sm script
+get_sm_version() {
+    local file="$1"
+    grep -m1 '^SM_VERSION=' "$file" 2>/dev/null | cut -d'"' -f2 || echo "unknown"
+}
+
 install_to() {
     local dir="$1"
+    local old_version=""
+    local new_version=""
+    local install_type="New install"
+
     mkdir -p "$dir"
 
+    # Check for existing installation
+    if [[ -f "${dir}/sm" ]]; then
+        old_version=$(get_sm_version "${dir}/sm")
+        install_type="Update"
+    fi
+
+    # Install new version
     if [[ -n "$SCRIPT_DIR" && -f "$LOCAL_SM" ]]; then
         cp "$LOCAL_SM" "${dir}/sm"
     else
@@ -65,7 +82,19 @@ install_to() {
     ln -sf "${dir}/sm" "${dir}/smd"
     ln -sf "${dir}/sm" "${dir}/sml"
 
-    echo "✓ Installed to ${dir}/sm"
+    # Get new version
+    new_version=$(get_sm_version "${dir}/sm")
+
+    # Display result
+    if [[ "$install_type" == "Update" ]]; then
+        if [[ "$old_version" == "$new_version" ]]; then
+            echo "✓ Reinstalled v${new_version} to ${dir}"
+        else
+            echo "✓ Updated ${old_version} → ${new_version} in ${dir}"
+        fi
+    else
+        echo "✓ Installed v${new_version} to ${dir}"
+    fi
 
     if [[ ":$PATH:" != *":${dir}:"* ]]; then
         echo "  ⚠ Add to PATH: export PATH=\"\${PATH}:${dir}\""
