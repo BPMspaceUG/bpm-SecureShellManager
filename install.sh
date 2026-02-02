@@ -79,6 +79,15 @@ install_to() {
         curl -fsSL -o "${dir}/sm" "${BASE_URL}/sm"
     fi
     chmod +x "${dir}/sm"
+
+    # Stamp version from git push date (installed copy has no git repo)
+    local ver=""
+    if [[ -n "$SCRIPT_DIR" ]] && git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null; then
+        ver=$(git -C "$SCRIPT_DIR" log -1 --format='%cd' --date=format:'%y%m%d-%H%S' origin/main 2>/dev/null || echo "")
+    fi
+    if [[ -n "$ver" ]]; then
+        sed -i "0,/^SM_VERSION=/{s/^SM_VERSION=.*/SM_VERSION=\"${ver}\"/}" "${dir}/sm"
+    fi
     ln -sf "${dir}/sm" "${dir}/smd"
     ln -sf "${dir}/sm" "${dir}/sml"
 
