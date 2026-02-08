@@ -1,0 +1,28 @@
+# SM - SSH Manager Configuration
+# Format: alias|host|port|user|directory|description|[ssh_key]
+#
+# Alias naming scheme: C<server-nr><ORG>-<USER>[-PROJECT]
+#   C02BPM-ROB       = Contabo 02, BPM org, user rob (home)
+#   C02BPM-ROB-N8N   = Contabo 02, BPM org, user rob, project n8n
+#   C03ICO-ADM       = Contabo 03, ICO org, user admin
+#
+# Host aliases (hostalias:hostname=alias_name)
+hostalias:contabo02.example.com=C02BPM
+hostalias:contabo03.example.com=C03BPM
+#
+# User rob on contabo02
+C02BPM-ROB|contabo02.example.com|22|rob|/home/rob|rob Home|~/.ssh/id_ed25519
+C02BPM-ROB-N8N|contabo02.example.com|22|rob|/home/rob/n8n-workflows|N8N Workflows|~/.ssh/id_ed25519
+
+# User admin on contabo02
+C02BPM-ADM|contabo02.example.com|22|admin|/home/admin|admin Home|~/.ssh/id_ed25519
+
+# User rob on contabo03
+C03BPM-ROB|contabo03.example.com|22|rob|/home/rob|rob Home|~/.ssh/id_ed25519
+C03BPM-ROB-APP|contabo03.example.com|22|rob|/home/rob/myapp|My App|~/.ssh/id_ed25519
+
+# Password auth (no ssh_key)
+C03BPM-ROO|contabo03.example.com|22|root|/root|root Home|
+
+# Default connection
+default=C02BPM-ROB
