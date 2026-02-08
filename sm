@@ -121,9 +121,28 @@ get_host_alias() {
 list_connections() {
     local default_conn=$(get_default)
 
+    # First pass: calculate column widths
+    local w_alias=5 w_host=9 w_user=4 w_dir=9
+    while IFS='|' read -r alias host port user directory description key; do
+        [[ "$alias" =~ ^#.*$ ]] && continue
+        [[ -z "$alias" ]] && continue
+        [[ "$alias" =~ ^default= ]] && continue
+        [[ "$alias" =~ ^hostalias: ]] && continue
+        local ha=$(get_host_alias "$host")
+        (( ${#alias} > w_alias )) && w_alias=${#alias}
+        (( ${#ha} > w_host )) && w_host=${#ha}
+        (( ${#user} > w_user )) && w_user=${#user}
+        (( ${#directory} > w_dir )) && w_dir=${#directory}
+    done < "$CONFIG_FILE"
+    w_alias=$((w_alias + 2))
+    w_host=$((w_host + 2))
+    w_user=$((w_user + 2))
+
+    local total=$((w_alias + w_host + w_user + w_dir))
+
     echo -e "${GREEN}=== SM - SSH Manager ${SM_VERSION} ===${NC}"
-    printf "%-10s %-12s %-15s %-35s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
-    echo "--------------------------------------------------------------------------------"
+    printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
+    printf '%*s\n' "$total" '' | tr ' ' '-'
 
     while IFS='|' read -r alias host port user directory description key; do
         # Skip comments, empty lines, host aliases, default
@@ -136,9 +155,9 @@ list_connections() {
 
         # Highlight default (green row)
         if [[ "$alias" == "$default_conn" ]]; then
-            printf "${GREEN}%-10s %-12s %-15s %-35s${NC}\n" "$alias" "$hostalias" "$user" "$directory"
+            printf "${GREEN}%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s${NC}\n" "$alias" "$hostalias" "$user" "$directory"
         else
-            printf "%-10s %-12s %-15s %-35s\n" "$alias" "$hostalias" "$user" "$directory"
+            printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "$alias" "$hostalias" "$user" "$directory"
         fi
     done < "$CONFIG_FILE"
 }
@@ -171,6 +190,19 @@ interactive_select() {
         exit 1
     fi
 
+    # Calculate dynamic column widths
+    local w_alias=5 w_host=9 w_user=4 w_dir=9
+    for i in "${!aliases[@]}"; do
+        (( ${#aliases[$i]} > w_alias )) && w_alias=${#aliases[$i]}
+        (( ${#hostaliases[$i]} > w_host )) && w_host=${#hostaliases[$i]}
+        (( ${#users[$i]} > w_user )) && w_user=${#users[$i]}
+        (( ${#directories[$i]} > w_dir )) && w_dir=${#directories[$i]}
+    done
+    w_alias=$((w_alias + 2))
+    w_host=$((w_host + 2))
+    w_user=$((w_user + 2))
+    local total=$((w_alias + w_host + w_user + w_dir + 2))
+
     # Find initial selection (default or first)
     local selected=0
     for i in "${!aliases[@]}"; do
@@ -198,9 +230,10 @@ interactive_select() {
         tput ed
 
         echo -e "${GREEN}=== SM - SSH Manager ${SM_VERSION} ===${NC}"
-        printf "%-10s %-12s %-15s %-35s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
-        echo "--------------------------------------------------------------------------------"
+        printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
+        printf '%*s\n' "$total" '' | tr ' ' '-'
 
+        local wa=$((w_alias - 2))
         for i in "${!aliases[@]}"; do
             local is_default=false
             [[ "${aliases[$i]}" == "$default_conn" ]] && is_default=true
@@ -208,15 +241,15 @@ interactive_select() {
             if [[ $i -eq $selected ]]; then
                 # Selected row - inverse video
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}\e[7m> %-8s %-12s %-15s %-35s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "${GREEN}\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 else
-                    printf "\e[7m> %-8s %-12s %-15s %-35s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 fi
             else
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}  %-8s %-12s %-15s %-35s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "${GREEN}  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 else
-                    printf "  %-8s %-12s %-15s %-35s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
                 fi
             fi
         done
