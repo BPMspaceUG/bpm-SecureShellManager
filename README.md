@@ -79,6 +79,18 @@ export PATH="$HOME/.local/bin:$PATH"
 | `sm <alias>` | Direkt zu Verbindung verbinden |
 | `sm list` | Alle Verbindungen anzeigen |
 | `sm set <alias>` | Default-Verbindung setzen |
+| `sm edit` | Config in $EDITOR öffnen |
+| `sm test <alias>` | SSH-Konnektivität testen |
+| `sm validate` | Config-Datei validieren |
+| `sm auth <alias>` | Verbinden mit Auth Port Forwarding (1455) |
+| `sm parallel <alias>` | Neue parallele Session erstellen |
+| `sm reset <alias>` | Hard Reset (Sessions löschen und neu) |
+| `sm sessions <alias>` | Sessions auf Server auflisten |
+| `sm add` | Neue Verbindung hinzufügen (Wizard) |
+| `sm remove <alias>` | Verbindung entfernen |
+| `sm completions [bash\|zsh]` | Shell-Completions ausgeben |
+| `sm --help` | Hilfe anzeigen |
+| `sm --version` | Version anzeigen |
 | `smd` | Schnellzugriff auf Default |
 | `sml` | Sessions auf Default-Server auflisten |
 
@@ -86,35 +98,58 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```
 === SM - SSH Manager ===
-ALIAS      HOSTALIAS    USER            DIRECTORY
+ALIAS      HOSTALIAS    USER            DIRECTORY     DESCRIPTION
 --------------------------------------------------------------------------------
-> sm231    contabo2     rob-ico         ico-n8n-prozesse2
-  sm232    contabo2     rob-ico         ico-cert
+> sm231    contabo2     rob-ico         ico-n8n       N8N Server
+  sm232    contabo2     rob-ico         ico-cert      Cert Service
 
-↑↓ Navigate | Enter: Connect | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit
+↑↓ Navigate | Enter: Connect | /: Search | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit
 ```
 
-**Tastenbelegung:**
-- `↑↓` - Navigation
-- `Enter` - Verbinden (zellij Session wiederherstellen/erstellen)
-- `A` - Auth Mode (SSH mit Port 1455 Forwarding)
-- `P` - Parallele Session erstellen (alias_2, alias_3, ...)
-- `L` - Sessions auf Server auflisten und auswählen
-- `H` - Hard Reset (Session löschen und neu erstellen)
-- `D` - Als Default setzen
-- `Esc/Q` - Beenden
+**Tastenbelegung Hauptmenü:**
+
+| Taste | Beschreibung |
+|-------|--------------|
+| `↑↓` | Navigation (mit Wrap-Around) |
+| `Enter` | Verbinden (zellij Session wiederherstellen/erstellen) |
+| `/` | Suchfilter aktivieren (tippt zum Filtern) |
+| `A` | Auth Mode (SSH mit Port 1455 Forwarding) |
+| `P` | Parallele Session erstellen (alias_2, alias_3, ...) |
+| `L` | Sessions auf Server auflisten und auswählen |
+| `H` | Hard Reset (Session löschen und neu erstellen) |
+| `D` | Als Default setzen |
+| `Esc/Q` | Beenden |
+
+**Tastenbelegung Suchfilter (nach `/`):**
+
+| Taste | Beschreibung |
+|-------|--------------|
+| Buchstaben/Zahlen | Zum Filter hinzufügen |
+| `Backspace` | Letztes Zeichen löschen |
+| `↑↓` | Navigation in gefilterten Ergebnissen |
+| `Enter` | Zum ausgewählten Eintrag verbinden |
+| `Esc` | Filter löschen, zurück zum Hauptmenü |
 
 ### Session-Liste (L)
 
 ```
-=== Sessions on sm210 (N8N Prozesse) ===
+=== Sessions for sm210 (N8N Prozesse) ===
 
-> sm210 [Created 5m ago]
-  sm220 [Created 1h ago]
-  [NEW] Create session 'sm210'
+> sm210
+  sm210_2
+  [NEW] Create parallel session
 
-↑↓ Navigate | Enter: Connect | Esc/Q: Back
+↑↓ Navigate | Enter: Connect | H: Hard Reset | Q: Back
 ```
+
+**Tastenbelegung Session-Liste:**
+
+| Taste | Beschreibung |
+|-------|--------------|
+| `↑↓` | Navigation |
+| `Enter` | Zur ausgewählten Session verbinden |
+| `H` | Hard Reset der ausgewählten Session |
+| `Esc/Q` | Zurück zum Hauptmenü |
 
 ## Session-Persistenz
 
@@ -169,9 +204,22 @@ sm232|contabo2.example.com|22|rob-ico|ico-cert|Cert Service|~/.ssh/special_key
 # Host-Alias (optional):
 hostalias:contabo2.example.com=contabo2
 
+# Connection groups (optional):
+# group: Production
+sm231|prod1.example.com|22|admin|/app|Prod Server 1|
+# group: Staging
+sm232|staging.example.com|22|admin|/app|Staging Server|
+
 # Default-Verbindung:
 default=sm231
 ```
+
+### Optionen
+
+| Option | Beschreibung |
+|--------|--------------|
+| `--no-color` | Farbige Ausgabe deaktivieren |
+| `NO_COLOR=1` | Umgebungsvariable zum Deaktivieren der Farben |
 
 ### Felder
 
