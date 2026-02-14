@@ -63,6 +63,67 @@ reset_terminal() {
     stty sane 2>/dev/null
 }
 
+# === DRY Helper Functions ===
+
+# Parse connection config by alias, sets CONN_* globals
+parse_connection() {
+    local alias="$1"
+    CONN_HOST="" CONN_PORT="" CONN_USER="" CONN_DIR="" CONN_DESC="" CONN_KEY=""
+    local line
+    line=$(awk -F'|' -v key="$alias" '$1 == key' "$CONFIG_FILE" 2>/dev/null || echo "")
+    [[ -z "$line" ]] && return 1
+    IFS='|' read -r _ CONN_HOST CONN_PORT CONN_USER CONN_DIR CONN_DESC CONN_KEY <<< "$line"
+    return 0
+}
+
+# Exit or return based on interactive mode
+exit_or_return() {
+    local code="${1:-0}"
+    local stay="${2:-0}"
+    if [[ $stay -eq 1 ]]; then
+        return "$code"
+    else
+        exit "$code"
+    fi
+}
+
+# Build SSH command array, sets global SSH_CMD
+build_ssh_cmd() {
+    local host="$1" port="$2" user="$3" key="$4" auth_mode="${5:-}"
+    SSH_CMD=()
+    SSH_CMD=(ssh)
+    [[ -n "$key" ]] && SSH_CMD+=(-i "$key")
+    [[ "$auth_mode" == "auth" ]] && SSH_CMD+=(-L 1455:localhost:1455)
+    SSH_CMD+=("${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
+}
+
+# Build cd command string for remote execution
+build_cd_cmd() {
+    local directory="$1"
+    [[ -n "$directory" ]] && echo "cd \"${directory}\" 2>/dev/null; " || echo ""
+}
+
+# Calculate column widths for connection display, sets W_* globals
+calculate_column_widths() {
+    W_ALIAS=5; W_HOST=9; W_USER=4; W_DIR=9
+    while IFS='|' read -r alias host port user directory description key; do
+        [[ "$alias" =~ ^#.*$ ]] && continue
+        [[ -z "$alias" ]] && continue
+        [[ "$alias" =~ ^default= ]] && continue
+        [[ "$alias" =~ ^hostalias: ]] && continue
+        local ha=$(get_host_alias "$host")
+        (( ${#alias} > W_ALIAS )) && W_ALIAS=${#alias}
+        (( ${#ha} > W_HOST )) && W_HOST=${#ha}
+        (( ${#user} > W_USER )) && W_USER=${#user}
+        (( ${#directory} > W_DIR )) && W_DIR=${#directory}
+    done < "$CONFIG_FILE"
+    W_ALIAS=$((W_ALIAS + 2))
+    W_HOST=$((W_HOST + 2))
+    W_USER=$((W_USER + 2))
+}
+
+# === End DRY Helper Functions ===
+
 # Zellij mouse configuration
 # - Pane selection with mouse requires mouse_mode true (zellij default)
 # - Shift+RightClick paste depends on terminal emulator (Windows Terminal: use Ctrl+Shift+V)
@@ -139,21 +200,8 @@ list_connections() {
     local default_conn=$(get_default)
 
     # First pass: calculate column widths
-    local w_alias=5 w_host=9 w_user=4 w_dir=9
-    while IFS='|' read -r alias host port user directory description key; do
-        [[ "$alias" =~ ^#.*$ ]] && continue
-        [[ -z "$alias" ]] && continue
-        [[ "$alias" =~ ^default= ]] && continue
-        [[ "$alias" =~ ^hostalias: ]] && continue
-        local ha=$(get_host_alias "$host")
-        (( ${#alias} > w_alias )) && w_alias=${#alias}
-        (( ${#ha} > w_host )) && w_host=${#ha}
-        (( ${#user} > w_user )) && w_user=${#user}
-        (( ${#directory} > w_dir )) && w_dir=${#directory}
-    done < "$CONFIG_FILE"
-    w_alias=$((w_alias + 2))
-    w_host=$((w_host + 2))
-    w_user=$((w_user + 2))
+    calculate_column_widths
+    local w_alias=$W_ALIAS w_host=$W_HOST w_user=$W_USER w_dir=$W_DIR
 
     local total=$((w_alias + w_host + w_user + w_dir))
 
@@ -208,16 +256,8 @@ interactive_select() {
     fi
 
     # Calculate dynamic column widths
-    local w_alias=5 w_host=9 w_user=4 w_dir=9
-    for i in "${!aliases[@]}"; do
-        (( ${#aliases[$i]} > w_alias )) && w_alias=${#aliases[$i]}
-        (( ${#hostaliases[$i]} > w_host )) && w_host=${#hostaliases[$i]}
-        (( ${#users[$i]} > w_user )) && w_user=${#users[$i]}
-        (( ${#directories[$i]} > w_dir )) && w_dir=${#directories[$i]}
-    done
-    w_alias=$((w_alias + 2))
-    w_host=$((w_host + 2))
-    w_user=$((w_user + 2))
+    calculate_column_widths
+    local w_alias=$W_ALIAS w_host=$W_HOST w_user=$W_USER w_dir=$W_DIR
     local total=$((w_alias + w_host + w_user + w_dir + 2))
 
     # Find initial selection (default or first)
@@ -476,42 +516,29 @@ list_and_connect() {
     local stay_interactive=0
     [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
-    # Parse connection (awk for exact field match — no regex injection)
-    local line
-    line=$(awk -F'|' -v key="$alias" '$1 == key' "$CONFIG_FILE" 2>/dev/null || echo "")
-
-    if [[ -z "$line" ]]; then
+    # Parse connection
+    if ! parse_connection "$alias"; then
         echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"
+        return 1
     fi
-
-    IFS='|' read -r _ host port user directory description key <<< "$line"
+    local host="$CONN_HOST" port="$CONN_PORT" user="$CONN_USER"
+    local directory="$CONN_DIR" description="$CONN_DESC" key="$CONN_KEY"
 
     # Validate port
     if ! validate_port "$port" "$alias"; then
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"
+        return 1
     fi
 
-    # Build SSH command array (base without auth port)
-    local ssh_cmd=(ssh)
-    [[ -n "$key" ]] && ssh_cmd+=(-i "$key")
-    ssh_cmd+=("${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
+    # Build SSH command arrays (base and auth)
+    build_ssh_cmd "$host" "$port" "$user" "$key"
+    local ssh_cmd=("${SSH_CMD[@]}")
+    build_ssh_cmd "$host" "$port" "$user" "$key" "auth"
+    local ssh_cmd_auth=("${SSH_CMD[@]}")
 
-    # Build SSH command array with auth port if needed
-    local ssh_cmd_auth=(ssh)
-    [[ -n "$key" ]] && ssh_cmd_auth+=(-i "$key")
-    ssh_cmd_auth+=(-L 1455:localhost:1455 "${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
-
-    local cd_cmd=""
-    [[ -n "$directory" ]] && cd_cmd="cd \"${directory}\" 2>/dev/null; "
+    local cd_cmd
+    cd_cmd=$(build_cd_cmd "$directory")
 
     echo -e "${GREEN}=== Sessions on $alias ($description) ===${NC}"
     echo -e "${YELLOW}Fetching sessions...${NC}"
@@ -524,28 +551,16 @@ list_and_connect() {
         echo -e "${RED}No sessions found for '$alias'.${NC}"
         read -p "Create new session '$alias'? [Y/n/b=back] " confirm
         if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
-            if [[ $stay_interactive -eq 1 ]]; then
-                return 0
-            else
-                exit 0
-            fi
+            exit_or_return 0 "$stay_interactive"; return 0
         elif [[ "$confirm" == "b" || "$confirm" == "B" ]]; then
-            if [[ $stay_interactive -eq 1 ]]; then
-                return 0
-            else
-                exit 0
-            fi
+            exit_or_return 0 "$stay_interactive"; return 0
         fi
         local final_ssh=("${ssh_cmd[@]}")
         [[ "$auth_mode" == "auth" ]] && final_ssh=("${ssh_cmd_auth[@]}")
         set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
         "${final_ssh[@]}" -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"
         reset_terminal
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 0
-        else
-            exit 0
-        fi
+        exit_or_return 0 "$stay_interactive"; return 0
     fi
 
     # Build session array from filtered sessions
@@ -648,11 +663,7 @@ list_and_connect() {
             elif [[ -z "$seq" ]]; then
                 # Escape - back
                 tput cnorm
-                if [[ $stay_interactive -eq 1 ]]; then
-                    return 0
-                else
-                    exit 0
-                fi
+                exit_or_return 0 "$stay_interactive"; return 0
             fi
         elif [[ "$key" == '' ]]; then
             # Enter - connect to selected or create new parallel
@@ -662,11 +673,7 @@ list_and_connect() {
             if [[ "$selected_session" == "[NEW]"* ]]; then
                 echo -e "${GREEN}Creating new parallel session...${NC}"
                 connect_parallel "$alias" "$auth_mode"
-                if [[ $stay_interactive -eq 1 ]]; then
-                    return 0
-                else
-                    exit 0
-                fi
+                exit_or_return 0 "$stay_interactive"; return 0
             else
                 local session_name="$selected_session"
                 echo -e "${GREEN}Connecting to session '$session_name'...${NC}"
@@ -675,11 +682,7 @@ list_and_connect() {
                 set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
                 "${final_ssh[@]}" -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach ${session_name}"
                 reset_terminal
-                if [[ $stay_interactive -eq 1 ]]; then
-                    return 0
-                else
-                    exit 0
-                fi
+                exit_or_return 0 "$stay_interactive"; return 0
             fi
         elif [[ "$key" == 'h' || "$key" == 'H' ]]; then
             # H - hard reset selected session only
@@ -689,29 +692,17 @@ list_and_connect() {
                 tput cnorm
                 echo -e "${GREEN}Creating new parallel session...${NC}"
                 connect_parallel "$alias" "$auth_mode"
-                if [[ $stay_interactive -eq 1 ]]; then
-                    return 0
-                else
-                    exit 0
-                fi
+                exit_or_return 0 "$stay_interactive"; return 0
             else
                 tput cnorm
                 echo -e "${YELLOW}Hard reset session '$selected_session'...${NC}"
                 connect_hard_reset "$alias" "$selected_session"
-                if [[ $stay_interactive -eq 1 ]]; then
-                    return 0
-                else
-                    exit 0
-                fi
+                exit_or_return 0 "$stay_interactive"; return 0
             fi
         elif [[ "$key" == 'q' || "$key" == 'Q' ]]; then
             # Q - back to main menu
             tput cnorm
-            if [[ $stay_interactive -eq 1 ]]; then
-                return 0
-            else
-                exit 0
-            fi
+            exit_or_return 0 "$stay_interactive"; return 0
         fi
     done
 }
@@ -724,37 +715,25 @@ connect_hard_reset() {
     local stay_interactive=0
     [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
-    # Parse connection (awk for exact field match — no regex injection)
-    local line
-    line=$(awk -F'|' -v key="$alias" '$1 == key' "$CONFIG_FILE" 2>/dev/null || echo "")
-
-    if [[ -z "$line" ]]; then
+    # Parse connection
+    if ! parse_connection "$alias"; then
         echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"; return 1
     fi
-
-    IFS='|' read -r _ host port user directory description key <<< "$line"
+    local host="$CONN_HOST" port="$CONN_PORT" user="$CONN_USER"
+    local directory="$CONN_DIR" description="$CONN_DESC" key="$CONN_KEY"
 
     # Validate port
     if ! validate_port "$port" "$alias"; then
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"; return 1
     fi
 
     # Build SSH command array
-    local ssh_cmd=(ssh)
-    [[ -n "$key" ]] && ssh_cmd+=(-i "$key")
-    ssh_cmd+=("${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
+    build_ssh_cmd "$host" "$port" "$user" "$key"
+    local ssh_cmd=("${SSH_CMD[@]}")
 
-    local cd_cmd=""
-    [[ -n "$directory" ]] && cd_cmd="cd \"${directory}\" 2>/dev/null; "
+    local cd_cmd
+    cd_cmd=$(build_cd_cmd "$directory")
 
     # If specific session provided (from submenu H), reset only that one
     if [[ -n "$specific_session" ]]; then
@@ -765,11 +744,7 @@ connect_hard_reset() {
         set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
         "${ssh_cmd[@]}" -t "$remote_cmd"
         reset_terminal
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 0
-        else
-            exit 0
-        fi
+        exit_or_return 0 "$stay_interactive"; return 0
     fi
 
     # Skip session query — just force-delete and create fresh
@@ -785,11 +760,7 @@ connect_hard_reset() {
     set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
     "${ssh_cmd[@]}" -t "$remote_cmd"
     reset_terminal
-    if [[ $stay_interactive -eq 1 ]]; then
-        return 0
-    else
-        exit 0
-    fi
+    exit_or_return 0 "$stay_interactive"; return 0
 }
 
 # Connect to a connection (smart routing based on session count)
@@ -799,37 +770,25 @@ connect() {
     local stay_interactive=0
     [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
-    # Parse connection (awk for exact field match — no regex injection)
-    local line
-    line=$(awk -F'|' -v key="$alias" '$1 == key' "$CONFIG_FILE" 2>/dev/null || echo "")
-
-    if [[ -z "$line" ]]; then
+    # Parse connection
+    if ! parse_connection "$alias"; then
         echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"; return 1
     fi
-
-    IFS='|' read -r _ host port user directory description key <<< "$line"
+    local host="$CONN_HOST" port="$CONN_PORT" user="$CONN_USER"
+    local directory="$CONN_DIR" description="$CONN_DESC" key="$CONN_KEY"
 
     # Validate port
     if ! validate_port "$port" "$alias"; then
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"; return 1
     fi
 
-    # Build SSH command array (without -t for session queries)
-    local ssh_cmd=(ssh)
-    [[ -n "$key" ]] && ssh_cmd+=(-i "$key")
-    ssh_cmd+=("${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
+    # Build SSH command array
+    build_ssh_cmd "$host" "$port" "$user" "$key"
+    local ssh_cmd=("${SSH_CMD[@]}")
 
-    local cd_cmd=""
-    [[ -n "$directory" ]] && cd_cmd="cd \"${directory}\" 2>/dev/null; "
+    local cd_cmd
+    cd_cmd=$(build_cd_cmd "$directory")
 
     # Cleanup dead sessions first
     echo -e "${YELLOW}Checking sessions...${NC}"
@@ -859,10 +818,8 @@ connect() {
     # Build final SSH command array with auth port forwarding if needed
     local final_ssh_cmd=("${ssh_cmd[@]}")
     if [[ "$auth_mode" == "auth" ]]; then
-        # Rebuild with auth port forwarding
-        final_ssh_cmd=(ssh)
-        [[ -n "$key" ]] && final_ssh_cmd+=(-i "$key")
-        final_ssh_cmd+=(-L 1455:localhost:1455 "${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
+        build_ssh_cmd "$host" "$port" "$user" "$key" "auth"
+        final_ssh_cmd=("${SSH_CMD[@]}")
     fi
 
     # Build remote command
@@ -901,38 +858,25 @@ connect_parallel() {
     local stay_interactive=0
     [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
 
-    # Parse connection (awk for exact field match — no regex injection)
-    local line
-    line=$(awk -F'|' -v key="$alias" '$1 == key' "$CONFIG_FILE" 2>/dev/null || echo "")
-
-    if [[ -z "$line" ]]; then
+    # Parse connection
+    if ! parse_connection "$alias"; then
         echo -e "${RED}Error: Connection '$alias' not found${NC}"
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"; return 1
     fi
-
-    IFS='|' read -r _ host port user directory description key <<< "$line"
+    local host="$CONN_HOST" port="$CONN_PORT" user="$CONN_USER"
+    local directory="$CONN_DIR" description="$CONN_DESC" key="$CONN_KEY"
 
     # Validate port
     if ! validate_port "$port" "$alias"; then
-        if [[ $stay_interactive -eq 1 ]]; then
-            return 1
-        else
-            exit 1
-        fi
+        exit_or_return 1 "$stay_interactive"; return 1
     fi
 
     # Build SSH command array
-    local ssh_cmd=(ssh)
-    [[ -n "$key" ]] && ssh_cmd+=(-i "$key")
-    [[ "$auth_mode" == "auth" ]] && ssh_cmd+=(-L 1455:localhost:1455)
-    ssh_cmd+=("${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
+    build_ssh_cmd "$host" "$port" "$user" "$key" "$auth_mode"
+    local ssh_cmd=("${SSH_CMD[@]}")
 
-    local cd_cmd=""
-    [[ -n "$directory" ]] && cd_cmd="cd \"${directory}\" 2>/dev/null; "
+    local cd_cmd
+    cd_cmd=$(build_cd_cmd "$directory")
 
     # Get next available parallel session name
     echo -e "${YELLOW}Finding next available session name...${NC}"
