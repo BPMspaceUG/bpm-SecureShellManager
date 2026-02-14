@@ -343,6 +343,33 @@ interactive_select() {
     # Set static window title for menu
     set_terminal_title "Secure Shell Manager"
 
+    # Search/filter state
+    local search_mode=false
+    local filter_text=""
+    local filtered_indices=()
+
+    # Rebuild filtered_indices from filter_text
+    rebuild_filter() {
+        filtered_indices=()
+        if [[ -z "$filter_text" ]]; then
+            for i in "${!aliases[@]}"; do
+                filtered_indices+=("$i")
+            done
+        else
+            local lc_filter
+            lc_filter=$(printf '%s' "$filter_text" | tr '[:upper:]' '[:lower:]')
+            for i in "${!aliases[@]}"; do
+                local haystack
+                haystack=$(printf '%s %s %s %s %s' "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}" | tr '[:upper:]' '[:lower:]')
+                if [[ "$haystack" == *"$lc_filter"* ]]; then
+                    filtered_indices+=("$i")
+                fi
+            done
+        fi
+    }
+    # Initialize with all entries
+    rebuild_filter
+
     # Draw function
     draw_menu() {
         # Move to top and clear
@@ -350,32 +377,46 @@ interactive_select() {
         tput ed
 
         echo -e "${GREEN}=== SM - SSH Manager ${SM_VERSION} ===${NC}"
+        if [[ "$search_mode" == "true" || -n "$filter_text" ]]; then
+            echo -e "${BLUE}Filter: ${filter_text}_${NC}"
+        fi
         printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "DESCRIPTION"
         printf '%*s\n' "$total" '' | tr ' ' '-'
 
         local wa=$((w_alias - 2))
-        for i in "${!aliases[@]}"; do
-            local is_default=false
-            [[ "${aliases[$i]}" == "$default_conn" ]] && is_default=true
+        local fi_count=${#filtered_indices[@]}
 
-            if [[ $i -eq $selected ]]; then
-                # Selected row - inverse video
-                if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
+        if [[ $fi_count -eq 0 ]]; then
+            echo -e "${YELLOW}  No matches${NC}"
+        else
+            for fi_pos in "${!filtered_indices[@]}"; do
+                local i="${filtered_indices[$fi_pos]}"
+                local is_default=false
+                [[ "${aliases[$i]}" == "$default_conn" ]] && is_default=true
+
+                if [[ $fi_pos -eq $selected ]]; then
+                    # Selected row - inverse video
+                    if [[ "$is_default" == "true" ]]; then
+                        printf "${GREEN}\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
+                    else
+                        printf "\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
+                    fi
                 else
-                    printf "\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
+                    if [[ "$is_default" == "true" ]]; then
+                        printf "${GREEN}  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
+                    else
+                        printf "  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
+                    fi
                 fi
-            else
-                if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
-                else
-                    printf "  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
-                fi
-            fi
-        done
+            done
+        fi
 
         echo ""
-        echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit${NC}"
+        if [[ "$search_mode" == "true" ]]; then
+            echo -e "${YELLOW}Type to filter | Backspace: delete | Esc: clear filter | Enter: select${NC}"
+        else
+            echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | /: Search | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit${NC}"
+        fi
     }
 
     redraw_menu() {
@@ -385,31 +426,112 @@ interactive_select() {
         draw_menu
     }
 
+    # Helper: get the real index of the selected item in the filtered list
+    get_selected_real_index() {
+        local fi_count=${#filtered_indices[@]}
+        if [[ $fi_count -eq 0 ]]; then
+            echo -1
+            return
+        fi
+        echo "${filtered_indices[$selected]}"
+    }
+
     # Draw menu
     redraw_menu
 
     # Read keys
     while true; do
+        local fi_count=${#filtered_indices[@]}
         # Read single key
         IFS= read -rsn1 key || continue
 
+        if [[ "$search_mode" == "true" ]]; then
+            # Search mode key handling
+            if [[ "$key" == $'\x1b' ]]; then
+                read -rsn2 -t 0.1 seq || true
+                if [[ "$seq" == '[A' ]]; then
+                    # Up arrow in search mode
+                    if [[ $fi_count -gt 0 ]]; then
+                        if [[ $selected -gt 0 ]]; then
+                            selected=$((selected - 1))
+                        else
+                            selected=$((fi_count - 1))
+                        fi
+                    fi
+                    draw_menu
+                elif [[ "$seq" == '[B' ]]; then
+                    # Down arrow in search mode
+                    if [[ $fi_count -gt 0 ]]; then
+                        if [[ $selected -lt $((fi_count - 1)) ]]; then
+                            selected=$((selected + 1))
+                        else
+                            selected=0
+                        fi
+                    fi
+                    draw_menu
+                elif [[ -z "$seq" ]]; then
+                    # Escape - exit search mode, clear filter
+                    search_mode=false
+                    filter_text=""
+                    rebuild_filter
+                    selected=0
+                    draw_menu
+                fi
+            elif [[ "$key" == '' ]]; then
+                # Enter - select current and exit search mode
+                search_mode=false
+                if [[ $fi_count -gt 0 ]]; then
+                    local real_idx
+                    real_idx=$(get_selected_real_index)
+                    tput cnorm
+                    connect "${aliases[$real_idx]}"
+                    rebuild_filter
+                    selected=0
+                    redraw_menu
+                fi
+            elif [[ "$key" == $'\x7f' || "$key" == $'\x08' ]]; then
+                # Backspace - remove last char
+                if [[ ${#filter_text} -gt 0 ]]; then
+                    filter_text="${filter_text%?}"
+                    rebuild_filter
+                    selected=0
+                fi
+                if [[ -z "$filter_text" ]]; then
+                    search_mode=false
+                fi
+                draw_menu
+            elif [[ "$key" =~ ^[[:print:]]$ ]]; then
+                # Printable character - add to filter
+                filter_text="${filter_text}${key}"
+                rebuild_filter
+                selected=0
+                draw_menu
+            fi
+            continue
+        fi
+
+        # Normal mode key handling
         if [[ "$key" == $'\x1b' ]]; then
             # Escape sequence - read more
             read -rsn2 -t 0.1 seq || true
             if [[ "$seq" == '[A' ]]; then
                 # Up arrow - wrap to bottom
-                if [[ $selected -gt 0 ]]; then
-                    selected=$((selected - 1))
-                else
-                    selected=$((count - 1))
+                if [[ $fi_count -gt 0 ]]; then
+                    if [[ $selected -gt 0 ]]; then
+                        selected=$((selected - 1))
+                    else
+                        selected=$((fi_count - 1))
+                    fi
                 fi
                 draw_menu
             elif [[ "$seq" == '[B' ]]; then
                 # Down arrow - wrap to top
-                if [[ $selected -lt $((count - 1)) ]]; then
-                    selected=$((selected + 1))
-                else
-                    selected=0
+                if [[ $fi_count -gt 0 ]]; then
+                    if [[ $selected -lt $((fi_count - 1)) ]]; then
+                        selected=$((selected + 1))
+                    else
+                        selected=0
+                    fi
                 fi
                 draw_menu
             elif [[ -z "$seq" ]]; then
@@ -417,36 +539,77 @@ interactive_select() {
                 tput cnorm
                 exit 0
             fi
+        elif [[ "$key" == '/' ]]; then
+            # Enter search mode
+            search_mode=true
+            filter_text=""
+            rebuild_filter
+            selected=0
+            draw_menu
         elif [[ "$key" == '' ]]; then
             # Enter key - connect with zellij session restore
-            tput cnorm
-            connect "${aliases[$selected]}"
-            redraw_menu
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                tput cnorm
+                connect "${aliases[$real_idx]}"
+                filter_text=""
+                rebuild_filter
+                selected=0
+                redraw_menu
+            fi
         elif [[ "$key" == 'a' || "$key" == 'A' ]]; then
-            # A key - Auth mode with port forwarding (1455)
-            tput cnorm
-            connect_auth "${aliases[$selected]}"
-            redraw_menu
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                tput cnorm
+                connect_auth "${aliases[$real_idx]}"
+                filter_text=""
+                rebuild_filter
+                selected=0
+                redraw_menu
+            fi
         elif [[ "$key" == 'p' || "$key" == 'P' ]]; then
-            # P key - create new parallel session
-            tput cnorm
-            connect_parallel "${aliases[$selected]}"
-            redraw_menu
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                tput cnorm
+                connect_parallel "${aliases[$real_idx]}"
+                filter_text=""
+                rebuild_filter
+                selected=0
+                redraw_menu
+            fi
         elif [[ "$key" == 'h' || "$key" == 'H' ]]; then
-            # H key - hard reset (interactive chose deliberately, skip confirm)
-            tput cnorm
-            connect_hard_reset "${aliases[$selected]}" --force
-            redraw_menu
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                tput cnorm
+                connect_hard_reset "${aliases[$real_idx]}" --force
+                filter_text=""
+                rebuild_filter
+                selected=0
+                redraw_menu
+            fi
         elif [[ "$key" == 'l' || "$key" == 'L' ]]; then
-            # L key - list sessions on server and connect
-            tput cnorm
-            list_and_connect "${aliases[$selected]}"
-            redraw_menu
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                tput cnorm
+                list_and_connect "${aliases[$real_idx]}"
+                filter_text=""
+                rebuild_filter
+                selected=0
+                redraw_menu
+            fi
         elif [[ "$key" == 'd' || "$key" == 'D' ]]; then
-            # D key - set default
-            set_default "${aliases[$selected]}"
-            default_conn="${aliases[$selected]}"
-            draw_menu
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                set_default "${aliases[$real_idx]}"
+                default_conn="${aliases[$real_idx]}"
+                draw_menu
+            fi
         elif [[ "$key" == 'q' || "$key" == 'Q' ]]; then
             # Q to quit
             tput cnorm
@@ -1248,6 +1411,32 @@ main() {
                 test_connection "$2"
             elif [[ "$1" == "validate" || "$1" == "doctor" ]]; then
                 validate_config
+            elif [[ "$1" == "auth" ]]; then
+                if [[ $# -lt 2 ]]; then
+                    echo -e "${RED}Usage: sm auth <alias>${NC}"
+                    exit 1
+                fi
+                connect_auth "$2"
+            elif [[ "$1" == "parallel" ]]; then
+                if [[ $# -lt 2 ]]; then
+                    echo -e "${RED}Usage: sm parallel <alias>${NC}"
+                    exit 1
+                fi
+                connect_parallel "$2"
+            elif [[ "$1" == "reset" ]]; then
+                if [[ $# -lt 2 ]]; then
+                    echo -e "${RED}Usage: sm reset <alias> [--force]${NC}"
+                    exit 1
+                fi
+                local reset_alias="$2"
+                shift 2
+                connect_hard_reset "$reset_alias" "$@"
+            elif [[ "$1" == "sessions" ]]; then
+                if [[ $# -lt 2 ]]; then
+                    echo -e "${RED}Usage: sm sessions <alias>${NC}"
+                    exit 1
+                fi
+                list_and_connect "$2"
             else
                 # Direct connection by alias
                 connect "$1"
