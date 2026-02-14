@@ -3,18 +3,20 @@
 # Quick SSH connection manager with zellij session persistence
 # Invoke as 'sml' for list mode
 
-# Version: MMDD-HHMM from last git push, or "dev" if not in repo
+# Version: YYMMDD-HHMM from HEAD commit
+#   clean + pushed  → 260214-1154         (release)
+#   clean + unpushed → 260214-1154-draft  (push pending)
+#   uncommitted     → 260214-1154-dirty   (uncommitted changes)
+# install.sh bakes the version string in at install time
 SM_VERSION="dev"
 _sm_dir="$(dirname "${BASH_SOURCE[0]:-$0}")"
 if git -C "$_sm_dir" rev-parse --git-dir &>/dev/null; then
-    _pushed=$(git -C "$_sm_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%S' origin/main 2>/dev/null || echo "")
-    if [[ -n "$_pushed" ]] && git -C "$_sm_dir" diff --quiet HEAD origin/main 2>/dev/null; then
-        SM_VERSION="$_pushed"
-    else
-        _head=$(git -C "$_sm_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%S' HEAD 2>/dev/null || echo "dev")
-        SM_VERSION="${_head}-draft"
+    SM_VERSION=$(git -C "$_sm_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "dev")
+    if ! git -C "$_sm_dir" diff --quiet HEAD 2>/dev/null || ! git -C "$_sm_dir" diff --cached --quiet HEAD 2>/dev/null; then
+        SM_VERSION="${SM_VERSION}-dirty"
+    elif ! git -C "$_sm_dir" diff --quiet HEAD "@{upstream}" 2>/dev/null; then
+        SM_VERSION="${SM_VERSION}-draft"
     fi
-    unset _pushed _head
 fi
 unset _sm_dir
 

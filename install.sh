@@ -80,13 +80,18 @@ install_to() {
     fi
     chmod +x "${dir}/sm"
 
-    # Stamp version from git push date (installed copy has no git repo)
-    local ver=""
+    # Stamp version from HEAD commit date (installed copy has no git repo)
+    local ver="" suffix=""
     if [[ -n "$SCRIPT_DIR" ]] && git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null; then
-        ver=$(git -C "$SCRIPT_DIR" log -1 --format='%cd' --date=format:'%y%m%d-%H%S' origin/main 2>/dev/null || echo "")
+        ver=$(git -C "$SCRIPT_DIR" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
+        if ! git -C "$SCRIPT_DIR" diff --quiet HEAD 2>/dev/null || ! git -C "$SCRIPT_DIR" diff --cached --quiet HEAD 2>/dev/null; then
+            suffix="-dirty"
+        elif ! git -C "$SCRIPT_DIR" diff --quiet HEAD "@{upstream}" 2>/dev/null; then
+            suffix="-draft"
+        fi
     fi
     if [[ -n "$ver" ]]; then
-        sed -i "0,/^SM_VERSION=/{s/^SM_VERSION=.*/SM_VERSION=\"${ver}\"/}" "${dir}/sm"
+        sed -i "0,/^SM_VERSION=/{s/^SM_VERSION=.*/SM_VERSION=\"${ver}${suffix}\"/}" "${dir}/sm"
     fi
     ln -sf "${dir}/sm" "${dir}/smd"
     ln -sf "${dir}/sm" "${dir}/sml"

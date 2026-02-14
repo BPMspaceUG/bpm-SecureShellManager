@@ -9,9 +9,25 @@
 ## Workflow
 
 1. Änderungen im Repo machen (`/home/rob/bpm-SecureShellManager/sm`)
-2. Nach Installation kopieren: `cp sm ~/.local/bin/sm`
-   - Oder `./install.sh` nutzen
+2. Installieren: `./install.sh --user` (brennt Version ein)
+   - Alternativ: `cp sm ~/.local/bin/sm` (zeigt dann "dev")
 3. Commit & Push
+
+## Versioning
+
+Format: **YYMMDD-HHMM** (Zeitstempel des HEAD-Commits)
+
+| Zustand | Anzeige | Bedeutung |
+|---------|---------|-----------|
+| committed + pushed | `260214-1154` | Release — produktionsbereit |
+| committed + nicht gepusht | `260214-1154-draft` | Push steht noch aus |
+| uncommitted changes | `260214-1154-dirty` | Noch nicht committed |
+| Kein Git-Repo (plain copy) | `dev` | Nicht über install.sh installiert |
+
+- `sm --version` zeigt den Zustand live (wenn aus Git-Repo ausgeführt)
+- `install.sh` brennt den aktuellen Zustand als fixen String ein
+- Rollback: `cp ~/.local/bin/sm.bak ~/.local/bin/sm`
+- **Immer `install.sh --user` statt `cp` verwenden** — sonst fehlt die Version
 
 ## Git Identity
 
