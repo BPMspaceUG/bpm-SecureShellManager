@@ -91,14 +91,16 @@ ALIAS      HOSTALIAS    USER            DIRECTORY
 > sm231    contabo2     rob-ico         ico-n8n-prozesse2
   sm232    contabo2     rob-ico         ico-cert
 
-↑↓ Navigate | Enter: Connect | L: List Sessions | R: Reset | D: Default | Esc/Q: Exit
+↑↓ Navigate | Enter: Connect | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit
 ```
 
 **Tastenbelegung:**
 - `↑↓` - Navigation
 - `Enter` - Verbinden (zellij Session wiederherstellen/erstellen)
+- `A` - Auth Mode (SSH mit Port 1455 Forwarding)
+- `P` - Parallele Session erstellen (alias_2, alias_3, ...)
 - `L` - Sessions auf Server auflisten und auswählen
-- `R` - Session zurücksetzen (löschen und neu erstellen)
+- `H` - Hard Reset (Session löschen und neu erstellen)
 - `D` - Als Default setzen
 - `Esc/Q` - Beenden
 
