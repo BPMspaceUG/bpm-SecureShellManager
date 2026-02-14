@@ -24,12 +24,68 @@ CONFIG_DIR="${HOME}/.config/sm"
 CONFIG_FILE="${CONFIG_DIR}/connections.conf"
 INTERACTIVE_MODE=0
 
-# Colors
+# Colors (may be cleared by --no-color or NO_COLOR env var)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+# Disable colors if NO_COLOR env var is set (https://no-color.org/)
+if [[ -n "${NO_COLOR:-}" ]]; then
+    RED='' GREEN='' YELLOW='' BLUE='' NC=''
+fi
+
+# Timeout wrapper: falls back to running command directly if timeout is unavailable
+HAS_TIMEOUT=true
+if ! command -v timeout &>/dev/null; then
+    HAS_TIMEOUT=false
+fi
+_timeout() {
+    if [[ "$HAS_TIMEOUT" == "true" ]]; then
+        timeout "$@"
+    else
+        # Skip the timeout duration arg, run command directly
+        shift
+        "$@"
+    fi
+}
+
+# Show usage information
+show_help() {
+    cat <<'HELPEOF'
+SM - SSH Manager
+Quick SSH connection manager with zellij session persistence.
+
+Usage:
+  sm                          Interactive connection selector
+  sm <alias>                  Connect to alias directly
+  sm list                     List all connections
+  sm set <alias>              Set default connection
+  sm edit                     Open config in $EDITOR
+  sm test <alias>             Test SSH connectivity
+  sm validate                 Validate config file
+  sm add                      Add a new connection (wizard)
+  sm remove <alias>           Remove a connection
+  sm auth <alias>             Connect with auth port forwarding (1455)
+  sm parallel <alias>         Create a new parallel session
+  sm reset <alias> [--force]  Hard reset sessions for alias
+  sm sessions <alias>         List and select sessions on server
+  sm completions [bash|zsh]   Output shell completion script
+  sm --help, -h               Show this help
+  sm --version, -v            Show version
+
+Shortcuts:
+  smd                         Connect to default connection
+  sml                         List sessions on default server
+
+Config: ~/.config/sm/connections.conf
+Format: alias|host|port|user|directory|description|[ssh_key]
+
+Options:
+  --no-color                  Disable colored output
+HELPEOF
+}
 
 # Escape string for use in regex patterns (grep -E, bash [[ =~ ]])
 regex_escape() {
@@ -37,8 +93,11 @@ regex_escape() {
 }
 
 # Set terminal window title (user@hostalias - description)
+# Strips control characters to prevent terminal escape injection
 set_terminal_title() {
-    printf '\033]0;%s\007' "$1"
+    local sanitized
+    sanitized=$(printf '%s' "$1" | tr -d '\000-\037\177')
+    printf '\033]0;%s\007' "$sanitized"
 }
 
 # Build a descriptive terminal title from connection info
@@ -105,7 +164,7 @@ build_cd_cmd() {
 
 # Calculate column widths for connection display, sets W_* globals
 calculate_column_widths() {
-    W_ALIAS=5; W_HOST=9; W_USER=4; W_DIR=9
+    W_ALIAS=5; W_HOST=9; W_USER=4; W_DIR=9; W_DESC=11
     while IFS='|' read -r alias host port user directory description key; do
         [[ "$alias" =~ ^#.*$ ]] && continue
         [[ -z "$alias" ]] && continue
@@ -116,10 +175,12 @@ calculate_column_widths() {
         (( ${#ha} > W_HOST )) && W_HOST=${#ha}
         (( ${#user} > W_USER )) && W_USER=${#user}
         (( ${#directory} > W_DIR )) && W_DIR=${#directory}
+        (( ${#description} > W_DESC )) && W_DESC=${#description}
     done < "$CONFIG_FILE"
     W_ALIAS=$((W_ALIAS + 2))
     W_HOST=$((W_HOST + 2))
     W_USER=$((W_USER + 2))
+    W_DESC=$((W_DESC + 2))
 }
 
 # === End DRY Helper Functions ===
@@ -201,12 +262,12 @@ list_connections() {
 
     # First pass: calculate column widths
     calculate_column_widths
-    local w_alias=$W_ALIAS w_host=$W_HOST w_user=$W_USER w_dir=$W_DIR
+    local w_alias=$W_ALIAS w_host=$W_HOST w_user=$W_USER w_dir=$W_DIR w_desc=$W_DESC
 
-    local total=$((w_alias + w_host + w_user + w_dir))
+    local total=$((w_alias + w_host + w_user + w_dir + w_desc))
 
     echo -e "${GREEN}=== SM - SSH Manager ${SM_VERSION} ===${NC}"
-    printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
+    printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "DESCRIPTION"
     printf '%*s\n' "$total" '' | tr ' ' '-'
 
     while IFS='|' read -r alias host port user directory description key; do
@@ -220,9 +281,9 @@ list_connections() {
 
         # Highlight default (green row)
         if [[ "$alias" == "$default_conn" ]]; then
-            printf "${GREEN}%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s${NC}\n" "$alias" "$hostalias" "$user" "$directory"
+            printf "${GREEN}%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s${NC}\n" "$alias" "$hostalias" "$user" "$directory" "$description"
         else
-            printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "$alias" "$hostalias" "$user" "$directory"
+            printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "$alias" "$hostalias" "$user" "$directory" "$description"
         fi
     done < "$CONFIG_FILE"
 }
@@ -235,6 +296,7 @@ interactive_select() {
     local hostaliases=()
     local users=()
     local directories=()
+    local descriptions=()
 
     # Build arrays
     while IFS='|' read -r alias host port user directory description key; do
@@ -247,6 +309,7 @@ interactive_select() {
         hostaliases+=("$(get_host_alias "$host")")
         users+=("$user")
         directories+=("$directory")
+        descriptions+=("$description")
     done < "$CONFIG_FILE"
 
     local count=${#aliases[@]}
@@ -257,8 +320,8 @@ interactive_select() {
 
     # Calculate dynamic column widths
     calculate_column_widths
-    local w_alias=$W_ALIAS w_host=$W_HOST w_user=$W_USER w_dir=$W_DIR
-    local total=$((w_alias + w_host + w_user + w_dir + 2))
+    local w_alias=$W_ALIAS w_host=$W_HOST w_user=$W_USER w_dir=$W_DIR w_desc=$W_DESC
+    local total=$((w_alias + w_host + w_user + w_dir + w_desc + 2))
 
     # Find initial selection (default or first)
     local selected=0
@@ -287,7 +350,7 @@ interactive_select() {
         tput ed
 
         echo -e "${GREEN}=== SM - SSH Manager ${SM_VERSION} ===${NC}"
-        printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY"
+        printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "DESCRIPTION"
         printf '%*s\n' "$total" '' | tr ' ' '-'
 
         local wa=$((w_alias - 2))
@@ -298,15 +361,15 @@ interactive_select() {
             if [[ $i -eq $selected ]]; then
                 # Selected row - inverse video
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "${GREEN}\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\e[27m${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
                 else
-                    printf "\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "\e[7m> %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\e[27m\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
                 fi
             else
                 if [[ "$is_default" == "true" ]]; then
-                    printf "${GREEN}  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "${GREEN}  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s${NC}\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
                 else
-                    printf "  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}"
+                    printf "  %-${wa}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "${aliases[$i]}" "${hostaliases[$i]}" "${users[$i]}" "${directories[$i]}" "${descriptions[$i]}"
                 fi
             fi
         done
@@ -424,7 +487,7 @@ get_sessions_for_alias() {
     # Build timeout command array
     local ssh_cmd_timeout=("${ssh_cmd[0]}" "${SSH_QUERY_TIMEOUT_OPTS[@]}" "${ssh_cmd[@]:1}")
     # Get sessions from remote, strip ANSI codes, filter by alias pattern
-    timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | \
+    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | \
         sed 's/\x1b\[[0-9;]*m//g' | \
         grep -E "^${safe_alias}(_[0-9]+)?(\s|$)" | \
         awk '{print $1}'
@@ -471,7 +534,7 @@ is_session_exited() {
     local safe_session
     safe_session=$(regex_escape "$session")
     local ssh_cmd_timeout=("${ssh_cmd[0]}" "${SSH_QUERY_TIMEOUT_OPTS[@]}" "${ssh_cmd[@]:1}")
-    timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | grep -Eq "^${safe_session}.*EXITED"
+    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | grep -Eq "^${safe_session}.*EXITED"
 }
 
 # Cleanup dead/exited sessions for an alias
@@ -488,7 +551,7 @@ cleanup_dead_sessions() {
     while IFS= read -r line; do
         if [[ "$line" =~ ^(${safe_alias}(_[0-9]+)?).*EXITED ]]; then
             local dead_session="${BASH_REMATCH[1]}"
-            timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij delete-session ${dead_session} --force 2>/dev/null" 2>/dev/null || true
+            _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij delete-session ${dead_session} --force 2>/dev/null" 2>/dev/null || true
         fi
     done <<< "$sessions"
 }
@@ -995,6 +1058,28 @@ run_ssh() {
 
 # Main
 main() {
+    # Pre-parse global flags before init_config (--help, --version, --no-color)
+    local args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            --version|-v)
+                echo "sm $SM_VERSION"
+                exit 0
+                ;;
+            --no-color)
+                RED='' GREEN='' YELLOW='' BLUE='' NC=''
+                ;;
+            *)
+                args+=("$arg")
+                ;;
+        esac
+    done
+    set -- "${args[@]+"${args[@]}"}"
+
     init_config
 
     # Get script name (for smd, sml detection)
@@ -1035,6 +1120,8 @@ main() {
                     exit 1
                 fi
                 set_default "$2"
+            elif [[ "$1" == "edit" ]]; then
+                "${EDITOR:-vi}" "$CONFIG_FILE"
             else
                 # Direct connection by alias
                 connect "$1"
