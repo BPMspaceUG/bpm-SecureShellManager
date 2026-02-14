@@ -270,7 +270,16 @@ list_connections() {
     printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "DESCRIPTION"
     printf '%*s\n' "$total" '' | tr ' ' '-'
 
-    while IFS='|' read -r alias host port user directory description key; do
+    while IFS= read -r raw_line; do
+        # Show group headers
+        if [[ "$raw_line" =~ ^#\ group:\ (.+)$ ]]; then
+            echo ""
+            echo -e "${BLUE}--- ${BASH_REMATCH[1]} ---${NC}"
+            continue
+        fi
+
+        IFS='|' read -r alias host port user directory description key <<< "$raw_line"
+
         # Skip comments, empty lines, host aliases, default
         [[ "$alias" =~ ^#.*$ ]] && continue
         [[ -z "$alias" ]] && continue
@@ -297,9 +306,18 @@ interactive_select() {
     local users=()
     local directories=()
     local descriptions=()
+    local groups=()
+    local current_group=""
 
     # Build arrays
-    while IFS='|' read -r alias host port user directory description key; do
+    while IFS= read -r raw_line; do
+        if [[ "$raw_line" =~ ^#\ group:\ (.+)$ ]]; then
+            current_group="${BASH_REMATCH[1]}"
+            continue
+        fi
+
+        IFS='|' read -r alias host port user directory description key <<< "$raw_line"
+
         [[ "$alias" =~ ^#.*$ ]] && continue
         [[ -z "$alias" ]] && continue
         [[ "$alias" =~ ^default= ]] && continue
@@ -310,6 +328,7 @@ interactive_select() {
         users+=("$user")
         directories+=("$directory")
         descriptions+=("$description")
+        groups+=("$current_group")
     done < "$CONFIG_FILE"
 
     local count=${#aliases[@]}
@@ -389,8 +408,14 @@ interactive_select() {
         if [[ $fi_count -eq 0 ]]; then
             echo -e "${YELLOW}  No matches${NC}"
         else
+            local last_group=""
             for fi_pos in "${!filtered_indices[@]}"; do
                 local i="${filtered_indices[$fi_pos]}"
+                # Show group header if group changed and not in filter mode
+                if [[ -z "$filter_text" && -n "${groups[$i]}" && "${groups[$i]}" != "$last_group" ]]; then
+                    echo -e "${BLUE}  --- ${groups[$i]} ---${NC}"
+                    last_group="${groups[$i]}"
+                fi
                 local is_default=false
                 [[ "${aliases[$i]}" == "$default_conn" ]] && is_default=true
 
@@ -1337,6 +1362,143 @@ validate_config() {
     fi
 }
 
+# Add a new connection via interactive wizard
+add_connection() {
+    echo -e "${GREEN}=== Add New Connection ===${NC}"
+    echo ""
+
+    local alias host port user directory description key
+
+    read -p "Alias (unique name, e.g. myserver): " alias
+    if [[ -z "$alias" ]] || [[ "$alias" == *"|"* ]]; then
+        echo -e "${RED}Error: Alias cannot contain '|' or be empty${NC}"
+        exit 1
+    fi
+    # Check for duplicate
+    if awk -F'|' -v key="$alias" '$1 == key {found=1; exit} END {exit !found}' "$CONFIG_FILE" 2>/dev/null; then
+        echo -e "${RED}Error: Connection '$alias' already exists.${NC}"
+        exit 1
+    fi
+
+    read -p "Host (hostname or IP): " host
+    if [[ -z "$host" ]]; then
+        echo -e "${RED}Host is required.${NC}"
+        exit 1
+    fi
+
+    read -p "Port [22]: " port
+    port="${port:-22}"
+    if ! validate_port "$port" "$alias"; then
+        exit 1
+    fi
+
+    read -p "User: " user
+    if [[ -z "$user" ]]; then
+        echo -e "${RED}User is required.${NC}"
+        exit 1
+    fi
+
+    read -p "Directory (optional, remote path after login): " directory
+    read -p "Description (optional): " description
+    read -p "SSH key path (optional, e.g. ~/.ssh/id_rsa): " key
+
+    # Validate no fields contain the config delimiter
+    if [[ "$host" == *"|"* ]] || [[ "$user" == *"|"* ]] || [[ "$description" == *"|"* ]] || [[ "$directory" == *"|"* ]] || [[ "$key" == *"|"* ]]; then
+        echo -e "${RED}Error: Fields cannot contain '|' (config delimiter)${NC}"
+        exit 1
+    fi
+
+    local line="${alias}|${host}|${port}|${user}|${directory}|${description}|${key}"
+    echo "$line" >> "$CONFIG_FILE"
+    echo -e "${GREEN}Connection '$alias' added.${NC}"
+}
+
+# Remove a connection by alias
+remove_connection() {
+    local alias="$1"
+
+    if ! awk -F'|' -v key="$alias" '$1 == key {found=1; exit} END {exit !found}' "$CONFIG_FILE"; then
+        echo -e "${RED}Error: Connection '$alias' not found.${NC}"
+        exit 1
+    fi
+
+    read -p "Remove connection '$alias'? [y/N] " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "${BLUE}Cancelled.${NC}"
+        exit 0
+    fi
+
+    # Remove the line matching the alias (exact match on first field)
+    awk -F'|' -v key="$alias" '$1 != key' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    echo -e "${GREEN}Connection '$alias' removed.${NC}"
+}
+
+# Output shell completions
+generate_completions() {
+    local shell="${1:-bash}"
+
+    case "$shell" in
+        bash)
+            cat <<'COMPEOF'
+# SM bash completions - source this or add to ~/.bashrc
+_sm_completions() {
+    local cur prev commands
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="list set edit test validate doctor auth parallel reset sessions add remove completions"
+
+    case "$prev" in
+        sm)
+            COMPREPLY=($(compgen -W "$commands --help --version --no-color" -- "$cur"))
+            return
+            ;;
+        set|test|auth|parallel|reset|sessions|remove)
+            local aliases
+            aliases=$(awk -F'|' '!/^(#|$|default=|hostalias:)/ {print $1}' ~/.config/sm/connections.conf 2>/dev/null)
+            COMPREPLY=($(compgen -W "$aliases" -- "$cur"))
+            return
+            ;;
+        completions)
+            COMPREPLY=($(compgen -W "bash zsh" -- "$cur"))
+            return
+            ;;
+    esac
+}
+complete -F _sm_completions sm
+COMPEOF
+            ;;
+        zsh)
+            cat <<'COMPEOF'
+# SM zsh completions - source this or add to ~/.zshrc
+_sm() {
+    local commands aliases
+    commands=(list set edit test validate doctor auth parallel reset sessions add remove completions --help --version --no-color)
+    aliases=(${(f)"$(awk -F'|' '!/^(#|$|default=|hostalias:)/ {print $1}' ~/.config/sm/connections.conf 2>/dev/null)"})
+
+    if (( CURRENT == 2 )); then
+        _describe 'command' commands
+        _describe 'alias' aliases
+    elif (( CURRENT == 3 )); then
+        case "$words[2]" in
+            set|test|auth|parallel|reset|sessions|remove)
+                _describe 'alias' aliases
+                ;;
+            completions)
+                _describe 'shell' '(bash zsh)'
+                ;;
+        esac
+    fi
+}
+compdef _sm sm
+COMPEOF
+            ;;
+        *)
+            echo -e "${RED}Unknown shell: $shell (use 'bash' or 'zsh')${NC}"
+            exit 1
+            ;;
+    esac
+}
+
 # Main
 main() {
     # Pre-parse global flags before init_config (--help, --version, --no-color)
@@ -1360,6 +1522,12 @@ main() {
         esac
     done
     set -- "${args[@]+"${args[@]}"}"
+
+    # Commands that don't need config
+    if [[ $# -ge 1 && "$1" == "completions" ]]; then
+        generate_completions "${2:-bash}"
+        exit 0
+    fi
 
     init_config
 
@@ -1437,6 +1605,14 @@ main() {
                     exit 1
                 fi
                 list_and_connect "$2"
+            elif [[ "$1" == "add" ]]; then
+                add_connection
+            elif [[ "$1" == "remove" || "$1" == "rm" ]]; then
+                if [[ $# -lt 2 ]]; then
+                    echo -e "${RED}Usage: sm remove <alias>${NC}"
+                    exit 1
+                fi
+                remove_connection "$2"
             else
                 # Direct connection by alias
                 connect "$1"
