@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# SM - SSH Manager
-# Quick SSH connection manager with zellij session persistence
-# Invoke as 'sml' for list mode
+# SM2 - SSH Manager (tmux edition)
+# Quick SSH connection manager with tmux session persistence
+# Invoke as 'sm2l' for list mode
 
 # Version: YYMMDD-HHMM from HEAD commit
 #   clean + pushed  → 260214-1154         (release)
@@ -56,30 +56,41 @@ _timeout() {
 # Show usage information
 show_help() {
     cat <<'HELPEOF'
-SM - SSH Manager
-Quick SSH connection manager with zellij session persistence.
+SM2 - SSH Manager (tmux edition)
+Quick SSH connection manager with tmux session persistence.
 
 Usage:
-  sm                          Interactive connection selector
-  sm <alias>                  Connect to alias directly
-  sm list                     List all connections
-  sm set <alias>              Set default connection
-  sm edit                     Open config in $EDITOR
-  sm test <alias>             Test SSH connectivity
-  sm validate                 Validate config file
-  sm add                      Add a new connection (wizard)
-  sm remove <alias>           Remove a connection
-  sm auth <alias>             Connect with auth port forwarding (1455)
-  sm parallel <alias>         Create a new parallel session
-  sm reset <alias> [--force]  Hard reset sessions for alias
-  sm sessions <alias>         List and select sessions on server
-  sm completions [bash|zsh]   Output shell completion script
-  sm --help, -h               Show this help
-  sm --version, -v            Show version
+  sm2                          Interactive connection selector
+  sm2 <alias>                  Connect to alias directly
+  sm2 list                     List all connections
+  sm2 set <alias>              Set default connection
+  sm2 edit                     Open config in $EDITOR
+  sm2 test <alias>             Test SSH connectivity
+  sm2 validate                 Validate config file
+  sm2 add                      Add a new connection (wizard)
+  sm2 remove <alias>           Remove a connection
+  sm2 auth <alias>             Connect with auth port forwarding (1455)
+  sm2 parallel <alias>         Create a new parallel session
+  sm2 reset <alias> [--force]  Hard reset sessions for alias
+  sm2 sessions <alias>         List and select sessions on server
+  sm2 completions [bash|zsh]   Output shell completion script
+  sm2 --help, -h               Show this help
+  sm2 --version, -v            Show version
 
 Shortcuts:
-  smd                         Connect to default connection
-  sml                         List sessions on default server
+  sm2d                         Connect to default connection
+  sm2l                         List sessions on default server
+
+Interactive keys:
+  Enter / T  Connect via tmux (default)
+  Z          Connect via Zellij (legacy fallback)
+  P          Create parallel tmux session
+  L          List tmux sessions on server
+  H          Hard reset tmux sessions
+  A          Connect with auth port forwarding
+  D          Set as default connection
+  /          Search/filter connections
+  Q / Esc    Quit
 
 Config: ~/.config/sm/connections.conf
 Format: alias|host|port|user|directory|description|[ssh_key]
@@ -158,10 +169,28 @@ build_ssh_cmd() {
     SSH_CMD+=("${RMATE_FORWARD[@]}" -p "$port" "${user}@${host}")
 }
 
+# Sanitize a string for safe use as a tmux/zellij session name
+# Strips everything except alphanumeric, dash, underscore, dot
+sanitize_session_name() {
+    printf '%s' "$1" | tr -cd 'A-Za-z0-9_.-'
+}
+
+# Escape a string for safe embedding inside double quotes in a remote shell command
+# Escapes: \ " $ `
+shell_escape_double() {
+    printf '%s' "$1" | sed 's/[\\\"$`]/\\&/g'
+}
+
 # Build cd command string for remote execution
 build_cd_cmd() {
     local directory="$1"
-    [[ -n "$directory" ]] && echo "cd \"${directory}\" 2>/dev/null; " || echo ""
+    if [[ -n "$directory" ]]; then
+        local escaped
+        escaped=$(shell_escape_double "$directory")
+        echo "cd \"${escaped}\" 2>/dev/null; "
+    else
+        echo ""
+    fi
 }
 
 # Calculate column widths for connection display, sets W_* globals
@@ -186,12 +215,6 @@ calculate_column_widths() {
 }
 
 # === End DRY Helper Functions ===
-
-# Zellij mouse configuration
-# - Pane selection with mouse requires mouse_mode true (zellij default)
-# - Shift+RightClick paste depends on terminal emulator (Windows Terminal: use Ctrl+Shift+V)
-# - Ctrl+V paste works via zellij clipboard passthrough
-ZELLIJ_MOUSE_FIX=''
 
 # rmate reverse port forwarding (allows editing remote files with local editor)
 # Usage on server: rmate filename.txt
@@ -268,7 +291,7 @@ list_connections() {
 
     local total=$((w_alias + w_host + w_user + w_dir + w_desc))
 
-    echo -e "${GREEN}=== SM - SSH Manager ${SM_VERSION} ===${NC}"
+    echo -e "${GREEN}=== SM2 - SSH Manager (tmux) ${SM_VERSION} ===${NC}"
     printf "%-${w_alias}s %-${w_host}s %-${w_user}s %-${w_dir}s %-${w_desc}s\n" "ALIAS" "HOSTALIAS" "USER" "DIRECTORY" "DESCRIPTION"
     printf '%*s\n' "$total" '' | tr ' ' '-'
 
@@ -397,7 +420,7 @@ interactive_select() {
         tput cup 0 0
         tput ed
 
-        echo -e "${GREEN}=== SM - SSH Manager ${SM_VERSION} ===${NC}"
+        echo -e "${GREEN}=== SM2 - SSH Manager (tmux) ${SM_VERSION} ===${NC}"
         if [[ "$search_mode" == "true" || -n "$filter_text" ]]; then
             echo -e "${BLUE}Filter: ${filter_text}_${NC}"
         fi
@@ -442,7 +465,7 @@ interactive_select() {
         if [[ "$search_mode" == "true" ]]; then
             echo -e "${YELLOW}Type to filter | Backspace: delete | Esc: clear filter | Enter: select${NC}"
         else
-            echo -e "${YELLOW}↑↓ Navigate | Enter: Connect | /: Search | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit${NC}"
+            echo -e "${YELLOW}↑↓ Navigate | Enter/T: tmux | Z: Zellij | A: Auth | P: Parallel | L: List | H: Hard Reset | D: Default | Q: Exit${NC}"
         fi
     }
 
@@ -574,12 +597,36 @@ interactive_select() {
             selected=0
             draw_menu
         elif [[ "$key" == '' ]]; then
-            # Enter key - connect with zellij session restore
+            # Enter key - connect with tmux session restore
             if [[ $fi_count -gt 0 ]]; then
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
                 connect "${aliases[$real_idx]}"
+                filter_text=""
+                rebuild_filter
+                selected=0
+                redraw_menu
+            fi
+        elif [[ "$key" == 't' || "$key" == 'T' ]]; then
+            # T key - explicit tmux connect (same as Enter)
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                tput cnorm
+                connect "${aliases[$real_idx]}"
+                filter_text=""
+                rebuild_filter
+                selected=0
+                redraw_menu
+            fi
+        elif [[ "$key" == 'z' || "$key" == 'Z' ]]; then
+            # Z key - Zellij fallback
+            if [[ $fi_count -gt 0 ]]; then
+                local real_idx
+                real_idx=$(get_selected_real_index)
+                tput cnorm
+                connect_zellij "${aliases[$real_idx]}"
                 filter_text=""
                 rebuild_filter
                 selected=0
@@ -664,9 +711,9 @@ set_default() {
     echo -e "${GREEN}Default set to: $new_default${NC}"
 }
 
-# === Session Helper Functions ===
+# === Session Helper Functions (tmux) ===
 
-# Get all sessions for an alias (supports parallel sessions like alias, alias_2, alias_3)
+# Get all tmux sessions for an alias (supports parallel sessions like alias, alias_2, alias_3)
 # Runs locally - queries remote server via SSH
 get_sessions_for_alias() {
     local alias="$1"
@@ -676,11 +723,9 @@ get_sessions_for_alias() {
     safe_alias=$(regex_escape "$alias")
     # Build timeout command array
     local ssh_cmd_timeout=("${ssh_cmd[0]}" "${SSH_QUERY_TIMEOUT_OPTS[@]}" "${ssh_cmd[@]:1}")
-    # Get sessions from remote, strip ANSI codes, filter by alias pattern
-    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | \
-        sed 's/\x1b\[[0-9;]*m//g' | \
-        grep -E "^${safe_alias}(_[0-9]+)?(\s|$)" | \
-        awk '{print $1}'
+    # Get tmux sessions from remote - clean output with -F format (no ANSI stripping needed)
+    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "tmux list-sessions -F '#{session_name}' 2>/dev/null" 2>/dev/null | \
+        grep -E "^${safe_alias}(_[0-9]+)?$" || true
 }
 
 # Count sessions for an alias
@@ -716,37 +761,28 @@ get_next_session_name() {
     fi
 }
 
-# Check if a specific session is exited/dead
-is_session_exited() {
+# Check if a specific tmux session exists on the remote
+# Returns 0 if session exists, 1 if not
+is_session_alive() {
     local session="$1"
     shift
     local ssh_cmd=("$@")
     local safe_session
     safe_session=$(regex_escape "$session")
     local ssh_cmd_timeout=("${ssh_cmd[0]}" "${SSH_QUERY_TIMEOUT_OPTS[@]}" "${ssh_cmd[@]:1}")
-    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | grep -Eq "^${safe_session}.*EXITED"
+    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "tmux has-session -t '${session}' 2>/dev/null && echo ALIVE" 2>/dev/null | grep -q "ALIVE"
 }
 
-# Cleanup dead/exited sessions for an alias
+# Cleanup dead sessions for an alias
+# tmux auto-cleans dead sessions, so this is a no-op
+# Kept for API compatibility with connect() flow
 cleanup_dead_sessions() {
-    local alias="$1"
-    shift
-    local ssh_cmd=("$@")
-    local safe_alias
-    safe_alias=$(regex_escape "$alias")
-    local ssh_cmd_timeout=("${ssh_cmd[0]}" "${SSH_QUERY_TIMEOUT_OPTS[@]}" "${ssh_cmd[@]:1}")
-    local sessions
-    sessions=$(timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
-
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^(${safe_alias}(_[0-9]+)?).*EXITED ]]; then
-            local dead_session="${BASH_REMATCH[1]}"
-            _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij delete-session ${dead_session} --force 2>/dev/null" 2>/dev/null || true
-        fi
-    done <<< "$sessions"
+    # tmux automatically removes sessions when all windows/panes close
+    # No manual cleanup needed
+    true
 }
 
-# Delete all sessions for an alias
+# Delete all tmux sessions for an alias
 delete_all_sessions_for_alias() {
     local alias="$1"
     shift
@@ -756,13 +792,13 @@ delete_all_sessions_for_alias() {
     sessions=$(get_sessions_for_alias "$alias" "${ssh_cmd[@]}")
 
     while IFS= read -r session; do
-        [[ -n "$session" ]] && "${ssh_cmd_timeout[@]}" "zellij delete-session ${session} --force 2>/dev/null" 2>/dev/null || true
+        [[ -n "$session" ]] && "${ssh_cmd_timeout[@]}" "tmux kill-session -t '${session}' 2>/dev/null" 2>/dev/null || true
     done <<< "$sessions"
 }
 
 # === End Session Helper Functions ===
 
-# List sessions on server and connect to selected one
+# List tmux sessions on server and connect to selected one
 list_and_connect() {
     local alias="$1"
     local auth_mode="${2:-}"  # Optional: "auth" for port forwarding mode
@@ -794,14 +830,14 @@ list_and_connect() {
     cd_cmd=$(build_cd_cmd "$directory")
 
     echo -e "${GREEN}=== Sessions on $alias ($description) ===${NC}"
-    echo -e "${YELLOW}Fetching sessions...${NC}"
+    echo -e "${YELLOW}Fetching tmux sessions...${NC}"
 
-    # Get sessions from server (strip ANSI color codes) - filter by alias pattern
+    # Get tmux sessions from server
     local sessions
     sessions=$(get_sessions_for_alias "$alias" "${ssh_cmd[@]}")
 
     if [[ -z "$sessions" ]]; then
-        echo -e "${RED}No sessions found for '$alias'.${NC}"
+        echo -e "${RED}No tmux sessions found for '$alias'.${NC}"
         read -p "Create new session '$alias'? [Y/n/b=back] " confirm
         if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
             exit_or_return 0 "$stay_interactive"; return 0
@@ -810,8 +846,10 @@ list_and_connect() {
         fi
         local final_ssh=("${ssh_cmd[@]}")
         [[ "$auth_mode" == "auth" ]] && final_ssh=("${ssh_cmd_auth[@]}")
+        local safe_alias_new
+        safe_alias_new=$(sanitize_session_name "$alias")
         set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
-        "${final_ssh[@]}" -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${alias}"
+        "${final_ssh[@]}" -t "command -v tmux >/dev/null 2>&1 || { echo 'Error: tmux is not installed on this server. Install with: sudo apt install tmux'; exit 1; }; ${cd_cmd}tmux new-session -A -s '${safe_alias_new}'"
         reset_terminal
         exit_or_return 0 "$stay_interactive"; return 0
     fi
@@ -835,20 +873,12 @@ list_and_connect() {
     tput civis
     trap cleanup EXIT INT TERM HUP
 
-    # Cache session status once (avoid SSH call per session per redraw)
-    local ssh_cmd_timeout=("${ssh_cmd[0]}" "${SSH_QUERY_TIMEOUT_OPTS[@]}" "${ssh_cmd[@]:1}")
-    local _cached_session_list=""
-    refresh_session_cache() {
-        _cached_session_list=$(timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "zellij list-sessions 2>/dev/null" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || echo "")
-    }
-    refresh_session_cache
-
-    # Draw function
+    # Draw function (tmux sessions don't have EXITED state, so all listed sessions are active)
     draw_sessions() {
         tput cup 0 0
         tput ed
 
-        echo -e "${GREEN}=== Sessions for $alias ($description) ===${NC}"
+        echo -e "${GREEN}=== tmux sessions for $alias ($description) ===${NC}"
         if [[ "$auth_mode" == "auth" ]]; then
             echo -e "${YELLOW}[Auth Mode: Port 1455 forwarding enabled]${NC}"
         fi
@@ -857,26 +887,17 @@ list_and_connect() {
         for i in "${!session_array[@]}"; do
             local session="${session_array[$i]}"
             local is_new=false
-            local is_exited=false
             [[ "$session" == "[NEW]"* ]] && is_new=true
-            # Check cached session list for exited status
-            local safe_session
-            safe_session=$(regex_escape "$session")
-            echo "$_cached_session_list" | grep -Eq "^${safe_session}.*EXITED" && is_exited=true
 
             if [[ $i -eq $selected ]]; then
                 if [[ "$is_new" == "true" ]]; then
                     printf "${BLUE}\e[7m> %s\e[27m${NC}\n" "$session"
-                elif [[ "$is_exited" == "true" ]]; then
-                    printf "${RED}\e[7m> %s (EXITED)\e[27m${NC}\n" "$session"
                 else
                     printf "${GREEN}\e[7m> %s\e[27m${NC}\n" "$session"
                 fi
             else
                 if [[ "$is_new" == "true" ]]; then
                     printf "${BLUE}  %s${NC}\n" "$session"
-                elif [[ "$is_exited" == "true" ]]; then
-                    printf "${RED}  %s (EXITED)${NC}\n" "$session"
                 else
                     printf "${GREEN}  %s${NC}\n" "$session"
                 fi
@@ -929,11 +950,13 @@ list_and_connect() {
                 exit_or_return 0 "$stay_interactive"; return 0
             else
                 local session_name="$selected_session"
-                echo -e "${GREEN}Connecting to session '$session_name'...${NC}"
+                local safe_sname
+                safe_sname=$(sanitize_session_name "$session_name")
+                echo -e "${GREEN}Connecting to tmux session '$safe_sname'...${NC}"
                 local final_ssh=("${ssh_cmd[@]}")
                 [[ "$auth_mode" == "auth" ]] && final_ssh=("${ssh_cmd_auth[@]}")
                 set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
-                "${final_ssh[@]}" -t "${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach ${session_name}"
+                "${final_ssh[@]}" -t "${cd_cmd}tmux attach-session -t '${safe_sname}'"
                 reset_terminal
                 exit_or_return 0 "$stay_interactive"; return 0
             fi
@@ -960,7 +983,7 @@ list_and_connect() {
     done
 }
 
-# Hard reset - delete session(s) and create fresh
+# Hard reset - delete tmux session(s) and create fresh
 # Args: alias [specific_session] [--force]
 connect_hard_reset() {
     local alias="$1"
@@ -999,10 +1022,12 @@ connect_hard_reset() {
 
     # If specific session provided (from submenu H), reset only that one
     if [[ -n "$specific_session" ]]; then
-        echo -e "${GREEN}Hard Reset: $specific_session${NC}"
-        echo -e "${YELLOW}Deleting session '${specific_session}' and creating fresh...${NC}"
+        local safe_session
+        safe_session=$(sanitize_session_name "$specific_session")
+        echo -e "${GREEN}Hard Reset: $safe_session${NC}"
+        echo -e "${YELLOW}Killing tmux session '${safe_session}' and creating fresh...${NC}"
         echo ""
-        local remote_cmd="zellij delete-session ${specific_session} --force 2>/dev/null; ${cd_cmd}zellij attach -c ${specific_session}"
+        local remote_cmd="tmux kill-session -t '${safe_session}' 2>/dev/null; ${cd_cmd}tmux new-session -A -s '${safe_session}'"
         set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
         "${ssh_cmd[@]}" -t "$remote_cmd"
         reset_terminal
@@ -1011,7 +1036,7 @@ connect_hard_reset() {
 
     # Confirm unless --force
     if [[ "$force" != "true" ]]; then
-        echo -e "${YELLOW}This will delete ALL sessions for '$alias' and create a fresh one.${NC}"
+        echo -e "${YELLOW}This will kill ALL tmux sessions for '$alias' and create a fresh one.${NC}"
         read -p "Continue? [y/N] " confirm
         if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
             echo -e "${BLUE}Cancelled.${NC}"
@@ -1019,23 +1044,23 @@ connect_hard_reset() {
         fi
     fi
 
-    # Skip session query — just force-delete and create fresh
-    # This ensures Hard Reset works even when the server is slow or sessions are stale
+    # Skip session query — just force-kill and create fresh
     echo -e "${GREEN}Hard Reset: $alias ($description)${NC}"
-    echo -e "${YELLOW}Deleting session '${alias}' and creating fresh...${NC}"
+    echo -e "${YELLOW}Killing tmux sessions and creating fresh...${NC}"
     echo ""
 
-    # Force-delete primary session and any parallel sessions, then create fresh
-    local safe_alias_remote
+    # Kill all matching tmux sessions, then create fresh
+    local safe_alias_remote safe_alias_tmux
     safe_alias_remote=$(regex_escape "$alias")
-    local remote_cmd="for s in \$(zellij list-sessions 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -oE '^${safe_alias_remote}(_[0-9]+)?' || true); do zellij delete-session \"\$s\" --force 2>/dev/null; done; ${cd_cmd}zellij attach -c ${alias}"
+    safe_alias_tmux=$(sanitize_session_name "$alias")
+    local remote_cmd="for s in \$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^${safe_alias_remote}(_[0-9]+)?\$' || true); do tmux kill-session -t \"\$s\" 2>/dev/null; done; ${cd_cmd}tmux new-session -A -s '${safe_alias_tmux}'"
     set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
     "${ssh_cmd[@]}" -t "$remote_cmd"
     reset_terminal
     exit_or_return 0 "$stay_interactive"; return 0
 }
 
-# Connect to a connection (smart routing based on session count)
+# Connect to a connection via tmux (smart routing based on session count)
 connect() {
     local alias="$1"
     local auth_mode="${2:-}"  # Optional: "auth" for port forwarding mode
@@ -1062,7 +1087,7 @@ connect() {
     local cd_cmd
     cd_cmd=$(build_cd_cmd "$directory")
 
-    # Cleanup dead sessions first
+    # tmux auto-cleans dead sessions, but still count active ones
     echo -e "${YELLOW}Checking sessions...${NC}"
     cleanup_dead_sessions "$alias" "${ssh_cmd[@]}"
 
@@ -1072,7 +1097,7 @@ connect() {
 
     if [[ $session_count -gt 1 ]]; then
         # Multiple sessions exist -> go to session submenu
-        echo -e "${BLUE}Found $session_count sessions for $alias${NC}"
+        echo -e "${BLUE}Found $session_count tmux sessions for $alias${NC}"
         list_and_connect "$alias" "$auth_mode"
         return $?
     fi
@@ -1094,8 +1119,10 @@ connect() {
         final_ssh_cmd=("${SSH_CMD[@]}")
     fi
 
-    # Build remote command
-    local remote_cmd="${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${session_name}"
+    # Build remote command: tmux new-session -A attaches if exists, creates if not
+    local safe_name
+    safe_name=$(sanitize_session_name "$session_name")
+    local remote_cmd="command -v tmux >/dev/null 2>&1 || { echo 'Error: tmux is not installed on this server. Install with: sudo apt install tmux'; exit 1; }; ${cd_cmd}tmux new-session -A -s '${safe_name}'"
 
     echo -e "${GREEN}Connecting to: $alias ($description)${NC}"
     echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
@@ -1105,7 +1132,7 @@ connect() {
     if [[ -n "$directory" ]]; then
         echo -e "${BLUE}Directory: $directory${NC}"
     fi
-    echo -e "${BLUE}Session: zellij ${session_name}${NC}"
+    echo -e "${BLUE}Session: tmux ${session_name}${NC}"
     echo ""
 
     # Set terminal window title to user@host - description
@@ -1123,7 +1150,7 @@ connect_auth() {
     connect "$alias" "auth"
 }
 
-# Create a new parallel session (e.g., alias_2, alias_3, ...)
+# Create a new parallel tmux session (e.g., alias_2, alias_3, ...)
 connect_parallel() {
     local alias="$1"
     local auth_mode="${2:-}"
@@ -1156,7 +1183,9 @@ connect_parallel() {
     session_name=$(get_next_session_name "$alias" "${ssh_cmd[@]}")
 
     # Build remote command
-    local remote_cmd="${ZELLIJ_MOUSE_FIX}${cd_cmd}zellij attach -c ${session_name}"
+    local safe_name
+    safe_name=$(sanitize_session_name "$session_name")
+    local remote_cmd="command -v tmux >/dev/null 2>&1 || { echo 'Error: tmux is not installed on this server. Install with: sudo apt install tmux'; exit 1; }; ${cd_cmd}tmux new-session -A -s '${safe_name}'"
 
     echo -e "${GREEN}Creating parallel session: $alias ($description)${NC}"
     echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
@@ -1166,13 +1195,57 @@ connect_parallel() {
     if [[ -n "$directory" ]]; then
         echo -e "${BLUE}Directory: $directory${NC}"
     fi
-    echo -e "${BLUE}Session: zellij ${session_name}${NC}"
+    echo -e "${BLUE}Session: tmux ${session_name}${NC}"
     echo ""
 
     # Set terminal window title to user@host - description
     set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
 
     # Execute SSH
+    run_ssh "$remote_cmd" "$user" "$host" "$port" "${ssh_cmd[@]}"
+    reset_terminal
+}
+
+# Connect via Zellij (legacy fallback, triggered by Z key)
+connect_zellij() {
+    local alias="$1"
+    local stay_interactive=0
+    [[ "${INTERACTIVE_MODE:-0}" -eq 1 ]] && stay_interactive=1
+
+    # Parse connection
+    if ! parse_connection "$alias"; then
+        echo -e "${RED}Error: Connection '$alias' not found${NC}"
+        exit_or_return 1 "$stay_interactive"; return 1
+    fi
+    local host="$CONN_HOST" port="$CONN_PORT" user="$CONN_USER"
+    local directory="$CONN_DIR" description="$CONN_DESC" key="$CONN_KEY"
+
+    # Validate port
+    if ! validate_port "$port" "$alias"; then
+        exit_or_return 1 "$stay_interactive"; return 1
+    fi
+
+    # Build SSH command array
+    build_ssh_cmd "$host" "$port" "$user" "$key"
+    local ssh_cmd=("${SSH_CMD[@]}")
+
+    local cd_cmd
+    cd_cmd=$(build_cd_cmd "$directory")
+
+    local safe_alias_z
+    safe_alias_z=$(sanitize_session_name "$alias")
+    local remote_cmd="command -v zellij >/dev/null 2>&1 || { echo 'Error: zellij is not installed on this server.'; exit 1; }; ${cd_cmd}zellij attach -c '${safe_alias_z}'"
+
+    echo -e "${GREEN}Connecting to: $alias ($description) [Zellij]${NC}"
+    echo -e "${BLUE}Host: ${user}@${host}:${port}${NC}"
+    if [[ -n "$directory" ]]; then
+        echo -e "${BLUE}Directory: $directory${NC}"
+    fi
+    echo -e "${BLUE}Session: zellij ${alias}${NC}"
+    echo ""
+
+    set_terminal_title "$(build_connection_title "$user" "$host" "$description")"
+
     run_ssh "$remote_cmd" "$user" "$host" "$port" "${ssh_cmd[@]}"
     reset_terminal
 }
@@ -1442,15 +1515,15 @@ generate_completions() {
     case "$shell" in
         bash)
             cat <<'COMPEOF'
-# SM bash completions - source this or add to ~/.bashrc
-_sm_completions() {
+# SM2 bash completions - source this or add to ~/.bashrc
+_sm2_completions() {
     local cur prev commands
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     commands="list set edit test validate doctor auth parallel reset sessions add remove completions"
 
     case "$prev" in
-        sm)
+        sm2)
             COMPREPLY=($(compgen -W "$commands --help --version --no-color" -- "$cur"))
             return
             ;;
@@ -1466,13 +1539,13 @@ _sm_completions() {
             ;;
     esac
 }
-complete -F _sm_completions sm
+complete -F _sm2_completions sm2
 COMPEOF
             ;;
         zsh)
             cat <<'COMPEOF'
-# SM zsh completions - source this or add to ~/.zshrc
-_sm() {
+# SM2 zsh completions - source this or add to ~/.zshrc
+_sm2() {
     local commands aliases
     commands=(list set edit test validate doctor auth parallel reset sessions add remove completions --help --version --no-color)
     aliases=(${(f)"$(awk -F'|' '!/^(#|$|default=|hostalias:)/ {print $1}' ~/.config/sm/connections.conf 2>/dev/null)"})
@@ -1491,7 +1564,7 @@ _sm() {
         esac
     fi
 }
-compdef _sm sm
+compdef _sm2 sm2
 COMPEOF
             ;;
         *)
@@ -1512,7 +1585,7 @@ main() {
                 exit 0
                 ;;
             --version|-v)
-                echo "sm $SM_VERSION"
+                echo "sm2 $SM_VERSION"
                 exit 0
                 ;;
             --no-color)
@@ -1533,33 +1606,33 @@ main() {
 
     init_config
 
-    # Get script name (for smd, sml detection)
+    # Get script name (for sm2d, sm2l detection)
     local script_name=$(basename "$0")
 
     # Handle different invocations
     case "$script_name" in
-        smd|sm1d)
-            # smd/sm1d = connect to default (quick access)
+        smd|sm2d)
+            # smd/sm2d = connect to default (quick access)
             local default_conn=$(get_default)
             if [[ -n "$default_conn" ]]; then
                 connect "$default_conn"
             else
-                echo -e "${RED}No default connection set. Use 'sm1 set <alias>' to set one.${NC}"
+                echo -e "${RED}No default connection set. Use 'sm set <alias>' to set one.${NC}"
                 exit 1
             fi
             ;;
-        sml|sm1l)
-            # sml/sm1l = list zellij sessions on default server
+        sml|sm2l)
+            # sml/sm2l = list tmux sessions on default server
             local default_conn=$(get_default)
             if [[ -n "$default_conn" ]]; then
                 list_and_connect "$default_conn"
             else
-                echo -e "${RED}No default connection set. Use 'sm1 set <alias>' to set one.${NC}"
+                echo -e "${RED}No default connection set. Use 'sm set <alias>' to set one.${NC}"
                 exit 1
             fi
             ;;
-        sm|sm1)
-            # sm with arguments
+        sm|sm2)
+            # sm2 with arguments
             if [[ $# -eq 0 ]]; then
                 # No args = interactive selection
                 interactive_select
@@ -1567,7 +1640,7 @@ main() {
                 list_connections
             elif [[ "$1" == "set" ]]; then
                 if [[ $# -lt 2 ]]; then
-                    echo -e "${RED}Usage: sm set <alias>${NC}"
+                    echo -e "${RED}Usage: sm2 set <alias>${NC}"
                     exit 1
                 fi
                 set_default "$2"
@@ -1575,7 +1648,7 @@ main() {
                 "${EDITOR:-vi}" "$CONFIG_FILE"
             elif [[ "$1" == "test" ]]; then
                 if [[ $# -lt 2 ]]; then
-                    echo -e "${RED}Usage: sm test <alias>${NC}"
+                    echo -e "${RED}Usage: sm2 test <alias>${NC}"
                     exit 1
                 fi
                 test_connection "$2"
@@ -1583,19 +1656,19 @@ main() {
                 validate_config
             elif [[ "$1" == "auth" ]]; then
                 if [[ $# -lt 2 ]]; then
-                    echo -e "${RED}Usage: sm auth <alias>${NC}"
+                    echo -e "${RED}Usage: sm2 auth <alias>${NC}"
                     exit 1
                 fi
                 connect_auth "$2"
             elif [[ "$1" == "parallel" ]]; then
                 if [[ $# -lt 2 ]]; then
-                    echo -e "${RED}Usage: sm parallel <alias>${NC}"
+                    echo -e "${RED}Usage: sm2 parallel <alias>${NC}"
                     exit 1
                 fi
                 connect_parallel "$2"
             elif [[ "$1" == "reset" ]]; then
                 if [[ $# -lt 2 ]]; then
-                    echo -e "${RED}Usage: sm reset <alias> [--force]${NC}"
+                    echo -e "${RED}Usage: sm2 reset <alias> [--force]${NC}"
                     exit 1
                 fi
                 local reset_alias="$2"
@@ -1603,7 +1676,7 @@ main() {
                 connect_hard_reset "$reset_alias" "$@"
             elif [[ "$1" == "sessions" ]]; then
                 if [[ $# -lt 2 ]]; then
-                    echo -e "${RED}Usage: sm sessions <alias>${NC}"
+                    echo -e "${RED}Usage: sm2 sessions <alias>${NC}"
                     exit 1
                 fi
                 list_and_connect "$2"
@@ -1611,7 +1684,7 @@ main() {
                 add_connection
             elif [[ "$1" == "remove" || "$1" == "rm" ]]; then
                 if [[ $# -lt 2 ]]; then
-                    echo -e "${RED}Usage: sm remove <alias>${NC}"
+                    echo -e "${RED}Usage: sm2 remove <alias>${NC}"
                     exit 1
                 fi
                 remove_connection "$2"

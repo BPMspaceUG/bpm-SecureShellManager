@@ -18,6 +18,7 @@ if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo "")"
 fi
 LOCAL_SM="${SCRIPT_DIR:+${SCRIPT_DIR}/sm}"
+LOCAL_SM2="${SCRIPT_DIR:+${SCRIPT_DIR}/sm2}"
 
 # Parse arguments
 MODE=""
@@ -66,19 +67,14 @@ install_to() {
 
     mkdir -p "$dir"
 
-    # Check for existing installation
-    if [[ -f "${dir}/sm" ]]; then
+    # Check for existing installation (check sm2 first since sm may be a symlink)
+    if [[ -f "${dir}/sm2" ]]; then
+        old_version=$(get_sm_version "${dir}/sm2")
+        install_type="Update"
+    elif [[ -f "${dir}/sm" && ! -L "${dir}/sm" ]]; then
         old_version=$(get_sm_version "${dir}/sm")
         install_type="Update"
     fi
-
-    # Install new version
-    if [[ -n "$SCRIPT_DIR" && -f "$LOCAL_SM" ]]; then
-        cp "$LOCAL_SM" "${dir}/sm"
-    else
-        curl -fsSL -o "${dir}/sm" "${BASE_URL}/sm"
-    fi
-    chmod +x "${dir}/sm"
 
     # Stamp version from HEAD commit date (installed copy has no git repo)
     local ver="" suffix=""
@@ -90,14 +86,40 @@ install_to() {
             suffix="-draft"
         fi
     fi
-    if [[ -n "$ver" ]]; then
-        sed -i "0,/^SM_VERSION=/{s/^SM_VERSION=.*/SM_VERSION=\"${ver}${suffix}\"/}" "${dir}/sm"
+
+    # Install sm1 (Zellij legacy)
+    if [[ -n "$SCRIPT_DIR" && -f "$LOCAL_SM" ]]; then
+        cp "$LOCAL_SM" "${dir}/sm1"
+    else
+        curl -fsSL -o "${dir}/sm1" "${BASE_URL}/sm"
     fi
-    ln -sf "${dir}/sm" "${dir}/smd"
-    ln -sf "${dir}/sm" "${dir}/sml"
+    chmod +x "${dir}/sm1"
+    if [[ -n "$ver" ]]; then
+        sed -i "0,/^SM_VERSION=/{s/^SM_VERSION=.*/SM_VERSION=\"${ver}${suffix}\"/}" "${dir}/sm1"
+    fi
+    ln -sf "${dir}/sm1" "${dir}/sm1d"
+    ln -sf "${dir}/sm1" "${dir}/sm1l"
+
+    # Install sm2 (tmux, default)
+    if [[ -n "$SCRIPT_DIR" && -f "$LOCAL_SM2" ]]; then
+        cp "$LOCAL_SM2" "${dir}/sm2"
+    else
+        curl -fsSL -o "${dir}/sm2" "${BASE_URL}/sm2"
+    fi
+    chmod +x "${dir}/sm2"
+    if [[ -n "$ver" ]]; then
+        sed -i "0,/^SM_VERSION=/{s/^SM_VERSION=.*/SM_VERSION=\"${ver}${suffix}\"/}" "${dir}/sm2"
+    fi
+    ln -sf "${dir}/sm2" "${dir}/sm2d"
+    ln -sf "${dir}/sm2" "${dir}/sm2l"
+
+    # sm/smd/sml → sm2 (tmux is the new default)
+    ln -sf "${dir}/sm2" "${dir}/sm"
+    ln -sf "${dir}/sm2" "${dir}/smd"
+    ln -sf "${dir}/sm2" "${dir}/sml"
 
     # Get new version
-    new_version=$(get_sm_version "${dir}/sm")
+    new_version=$(get_sm_version "${dir}/sm2")
 
     # Display result
     if [[ "$install_type" == "Update" ]]; then
@@ -139,4 +161,6 @@ case "$MODE" in
 esac
 
 echo ""
-echo "Commands: sm, smd (default), sml (list)"
+echo "Commands: sm, smd, sml          → tmux (default)"
+echo "         sm2, sm2d, sm2l        → tmux (explicit)"
+echo "         sm1, sm1d, sm1l        → Zellij (legacy)"
