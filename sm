@@ -476,7 +476,7 @@ interactive_select() {
             # Search mode key handling
             if [[ "$key" == $'\x1b' ]]; then
                 read -rsn2 -t 0.1 seq || true
-                if [[ "$seq" == '[A' ]]; then
+                if [[ "$seq" == '[A' || "$seq" == 'OA' ]]; then
                     # Up arrow in search mode
                     if [[ $fi_count -gt 0 ]]; then
                         if [[ $selected -gt 0 ]]; then
@@ -486,7 +486,7 @@ interactive_select() {
                         fi
                     fi
                     draw_menu
-                elif [[ "$seq" == '[B' ]]; then
+                elif [[ "$seq" == '[B' || "$seq" == 'OB' ]]; then
                     # Down arrow in search mode
                     if [[ $fi_count -gt 0 ]]; then
                         if [[ $selected -lt $((fi_count - 1)) ]]; then
@@ -541,7 +541,7 @@ interactive_select() {
         if [[ "$key" == $'\x1b' ]]; then
             # Escape sequence - read more
             read -rsn2 -t 0.1 seq || true
-            if [[ "$seq" == '[A' ]]; then
+            if [[ "$seq" == '[A' || "$seq" == 'OA' ]]; then
                 # Up arrow - wrap to bottom
                 if [[ $fi_count -gt 0 ]]; then
                     if [[ $selected -gt 0 ]]; then
@@ -551,7 +551,7 @@ interactive_select() {
                     fi
                 fi
                 draw_menu
-            elif [[ "$seq" == '[B' ]]; then
+            elif [[ "$seq" == '[B' || "$seq" == 'OB' ]]; then
                 # Down arrow - wrap to top
                 if [[ $fi_count -gt 0 ]]; then
                     if [[ $selected -lt $((fi_count - 1)) ]]; then
@@ -897,7 +897,7 @@ list_and_connect() {
 
         if [[ "$key" == $'\x1b' ]]; then
             read -rsn2 -t 0.1 seq || true
-            if [[ "$seq" == '[A' ]]; then
+            if [[ "$seq" == '[A' || "$seq" == 'OA' ]]; then
                 # Up arrow
                 if [[ $selected -gt 0 ]]; then
                     selected=$((selected - 1))
@@ -905,7 +905,7 @@ list_and_connect() {
                     selected=$((count - 1))
                 fi
                 draw_sessions
-            elif [[ "$seq" == '[B' ]]; then
+            elif [[ "$seq" == '[B' || "$seq" == 'OB' ]]; then
                 # Down arrow
                 if [[ $selected -lt $((count - 1)) ]]; then
                     selected=$((selected + 1))

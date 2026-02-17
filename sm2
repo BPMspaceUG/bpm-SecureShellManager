@@ -499,7 +499,7 @@ interactive_select() {
             # Search mode key handling
             if [[ "$key" == $'\x1b' ]]; then
                 read -rsn2 -t 0.1 seq || true
-                if [[ "$seq" == '[A' ]]; then
+                if [[ "$seq" == '[A' || "$seq" == 'OA' ]]; then
                     # Up arrow in search mode
                     if [[ $fi_count -gt 0 ]]; then
                         if [[ $selected -gt 0 ]]; then
@@ -509,7 +509,7 @@ interactive_select() {
                         fi
                     fi
                     draw_menu
-                elif [[ "$seq" == '[B' ]]; then
+                elif [[ "$seq" == '[B' || "$seq" == 'OB' ]]; then
                     # Down arrow in search mode
                     if [[ $fi_count -gt 0 ]]; then
                         if [[ $selected -lt $((fi_count - 1)) ]]; then
@@ -563,8 +563,9 @@ interactive_select() {
         # Normal mode key handling
         if [[ "$key" == $'\x1b' ]]; then
             # Escape sequence - read more
+            # Handle both normal mode ([A/[B) and application mode (OA/OB) arrow keys
             read -rsn2 -t 0.1 seq || true
-            if [[ "$seq" == '[A' ]]; then
+            if [[ "$seq" == '[A' || "$seq" == 'OA' ]]; then
                 # Up arrow - wrap to bottom
                 if [[ $fi_count -gt 0 ]]; then
                     if [[ $selected -gt 0 ]]; then
@@ -574,7 +575,7 @@ interactive_select() {
                     fi
                 fi
                 draw_menu
-            elif [[ "$seq" == '[B' ]]; then
+            elif [[ "$seq" == '[B' || "$seq" == 'OB' ]]; then
                 # Down arrow - wrap to top
                 if [[ $fi_count -gt 0 ]]; then
                     if [[ $selected -lt $((fi_count - 1)) ]]; then
@@ -729,13 +730,6 @@ get_sessions_for_alias() {
 }
 
 # Count sessions for an alias
-count_sessions_for_alias() {
-    local alias="$1"
-    shift
-    local ssh_cmd=("$@")
-    get_sessions_for_alias "$alias" "${ssh_cmd[@]}" | wc -l
-}
-
 # Get next parallel session name
 get_next_session_name() {
     local alias="$1"
@@ -918,7 +912,7 @@ list_and_connect() {
 
         if [[ "$key" == $'\x1b' ]]; then
             read -rsn2 -t 0.1 seq || true
-            if [[ "$seq" == '[A' ]]; then
+            if [[ "$seq" == '[A' || "$seq" == 'OA' ]]; then
                 # Up arrow
                 if [[ $selected -gt 0 ]]; then
                     selected=$((selected - 1))
@@ -926,7 +920,7 @@ list_and_connect() {
                     selected=$((count - 1))
                 fi
                 draw_sessions
-            elif [[ "$seq" == '[B' ]]; then
+            elif [[ "$seq" == '[B' || "$seq" == 'OB' ]]; then
                 # Down arrow
                 if [[ $selected -lt $((count - 1)) ]]; then
                     selected=$((selected + 1))
@@ -1087,13 +1081,12 @@ connect() {
     local cd_cmd
     cd_cmd=$(build_cd_cmd "$directory")
 
-    # tmux auto-cleans dead sessions, but still count active ones
+    # Single SSH query: get sessions and derive count
     echo -e "${YELLOW}Checking sessions...${NC}"
-    cleanup_dead_sessions "$alias" "${ssh_cmd[@]}"
-
-    # Count remaining sessions
+    local sessions
+    sessions=$(get_sessions_for_alias "$alias" "${ssh_cmd[@]}")
     local session_count
-    session_count=$(count_sessions_for_alias "$alias" "${ssh_cmd[@]}")
+    session_count=$(echo "$sessions" | grep -c . || echo "0")
 
     if [[ $session_count -gt 1 ]]; then
         # Multiple sessions exist -> go to session submenu
@@ -1102,9 +1095,7 @@ connect() {
         return $?
     fi
 
-    # Get existing session or use primary name
-    local sessions
-    sessions=$(get_sessions_for_alias "$alias" "${ssh_cmd[@]}")
+    # Use existing session or primary name
     local session_name
     if [[ $session_count -eq 1 ]]; then
         session_name=$(echo "$sessions" | head -1)
