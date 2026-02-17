@@ -76,14 +76,17 @@ install_to() {
         install_type="Update"
     fi
 
-    # Stamp version from HEAD commit date (installed copy has no git repo)
+    # Stamp version: dirty uses install timestamp, clean uses commit timestamp
     local ver="" suffix=""
     if [[ -n "$SCRIPT_DIR" ]] && git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null; then
-        ver=$(git -C "$SCRIPT_DIR" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
         if ! git -C "$SCRIPT_DIR" diff --quiet HEAD 2>/dev/null || ! git -C "$SCRIPT_DIR" diff --cached --quiet HEAD 2>/dev/null; then
+            ver=$(date '+%y%m%d-%H%M')
             suffix="-dirty"
         elif ! git -C "$SCRIPT_DIR" diff --quiet HEAD "@{upstream}" 2>/dev/null; then
+            ver=$(git -C "$SCRIPT_DIR" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
             suffix="-draft"
+        else
+            ver=$(git -C "$SCRIPT_DIR" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
         fi
     fi
 

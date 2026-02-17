@@ -15,13 +15,13 @@
 
 ## Versioning
 
-Format: **YYMMDD-HHMM** (Zeitstempel des HEAD-Commits)
+Format: **YYMMDD-HHMM**
 
-| Zustand | Anzeige | Bedeutung |
-|---------|---------|-----------|
-| committed + pushed | `260214-1154` | Release — produktionsbereit |
-| committed + nicht gepusht | `260214-1154-draft` | Push steht noch aus |
-| uncommitted changes | `260214-1154-dirty` | Noch nicht committed |
+| Zustand | Anzeige | Zeitstempel | Bedeutung |
+|---------|---------|-------------|-----------|
+| committed + pushed | `260214-1154` | HEAD-Commit | Release — produktionsbereit |
+| committed + nicht gepusht | `260214-1154-draft` | HEAD-Commit | Push steht noch aus |
+| uncommitted changes | `260217-0930-dirty` | **Install-Zeitpunkt** | Noch nicht committed |
 | Kein Git-Repo (plain copy) | `dev` | Nicht über install.sh installiert |
 
 - `sm --version` zeigt den Zustand live (wenn aus Git-Repo ausgeführt)
