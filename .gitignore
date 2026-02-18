@@ -1,0 +1,21 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# IDE directories
+.vscode/
+.idea/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Credentials
+*.pem
+*.key
