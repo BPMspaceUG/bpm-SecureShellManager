@@ -375,6 +375,7 @@ interactive_select() {
             break
         fi
     done
+    local default_selected=$selected
 
     # Hide cursor and setup cleanup
     cleanup() {
@@ -536,7 +537,7 @@ interactive_select() {
                     tput cnorm
                     connect "${aliases[$real_idx]}"
                     rebuild_filter
-                    selected=0
+                    selected=$default_selected
                     redraw_menu
                 fi
             elif [[ "$key" == $'\x7f' || "$key" == $'\x08' ]]; then
@@ -606,7 +607,7 @@ interactive_select() {
                 connect "${aliases[$real_idx]}"
                 filter_text=""
                 rebuild_filter
-                selected=0
+                selected=$default_selected
                 redraw_menu
             fi
         elif [[ "$key" == 't' || "$key" == 'T' ]]; then
@@ -618,7 +619,7 @@ interactive_select() {
                 connect "${aliases[$real_idx]}"
                 filter_text=""
                 rebuild_filter
-                selected=0
+                selected=$default_selected
                 redraw_menu
             fi
         elif [[ "$key" == 'z' || "$key" == 'Z' ]]; then
@@ -630,7 +631,7 @@ interactive_select() {
                 connect_zellij "${aliases[$real_idx]}"
                 filter_text=""
                 rebuild_filter
-                selected=0
+                selected=$default_selected
                 redraw_menu
             fi
         elif [[ "$key" == 'a' || "$key" == 'A' ]]; then
@@ -641,7 +642,7 @@ interactive_select() {
                 connect_auth "${aliases[$real_idx]}"
                 filter_text=""
                 rebuild_filter
-                selected=0
+                selected=$default_selected
                 redraw_menu
             fi
         elif [[ "$key" == 'p' || "$key" == 'P' ]]; then
@@ -652,7 +653,7 @@ interactive_select() {
                 connect_parallel "${aliases[$real_idx]}"
                 filter_text=""
                 rebuild_filter
-                selected=0
+                selected=$default_selected
                 redraw_menu
             fi
         elif [[ "$key" == 'h' || "$key" == 'H' ]]; then
@@ -663,7 +664,7 @@ interactive_select() {
                 connect_hard_reset "${aliases[$real_idx]}" --force
                 filter_text=""
                 rebuild_filter
-                selected=0
+                selected=$default_selected
                 redraw_menu
             fi
         elif [[ "$key" == 'l' || "$key" == 'L' ]]; then
@@ -674,7 +675,7 @@ interactive_select() {
                 list_and_connect "${aliases[$real_idx]}"
                 filter_text=""
                 rebuild_filter
-                selected=0
+                selected=$default_selected
                 redraw_menu
             fi
         elif [[ "$key" == 'd' || "$key" == 'D' ]]; then
@@ -1086,7 +1087,7 @@ connect() {
     local sessions
     sessions=$(get_sessions_for_alias "$alias" "${ssh_cmd[@]}")
     local session_count
-    session_count=$(echo "$sessions" | grep -c . || echo "0")
+    session_count=$(printf '%s' "$sessions" | grep -c . || true)
 
     if [[ $session_count -gt 1 ]]; then
         # Multiple sessions exist -> go to session submenu
