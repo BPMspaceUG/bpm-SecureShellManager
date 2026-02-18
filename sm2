@@ -176,9 +176,9 @@ sanitize_session_name() {
 }
 
 # Escape a string for safe embedding inside double quotes in a remote shell command
-# Escapes: \ " $ `
+# Escapes: \ " $ ` !
 shell_escape_double() {
-    printf '%s' "$1" | sed 's/[\\\"$`]/\\&/g'
+    printf '%s' "$1" | sed 's/[\\\"$`!]/\\&/g'
 }
 
 # Build cd command string for remote execution
@@ -229,6 +229,7 @@ SSH_QUERY_MAX_SECS=10  # hard kill for entire ssh query call
 init_config() {
     if [[ ! -d "$CONFIG_DIR" ]]; then
         mkdir -p "$CONFIG_DIR"
+        chmod 700 "$CONFIG_DIR"
     fi
 
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -247,6 +248,7 @@ init_config() {
 # default=sm231
 
 EOF
+        chmod 600 "$CONFIG_FILE"
         echo -e "${YELLOW}Config file created: $CONFIG_FILE${NC}"
         echo -e "${YELLOW}Please edit it to add your connections.${NC}"
         exit 0
@@ -535,7 +537,7 @@ interactive_select() {
                     local real_idx
                     real_idx=$(get_selected_real_index)
                     tput cnorm
-                    connect "${aliases[$real_idx]}"
+                    connect "${aliases[$real_idx]}" || true
                     rebuild_filter
                     selected=$default_selected
                     redraw_menu
@@ -604,7 +606,7 @@ interactive_select() {
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
-                connect "${aliases[$real_idx]}"
+                connect "${aliases[$real_idx]}" || true
                 filter_text=""
                 rebuild_filter
                 selected=$default_selected
@@ -616,7 +618,7 @@ interactive_select() {
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
-                connect "${aliases[$real_idx]}"
+                connect "${aliases[$real_idx]}" || true
                 filter_text=""
                 rebuild_filter
                 selected=$default_selected
@@ -628,7 +630,7 @@ interactive_select() {
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
-                connect_zellij "${aliases[$real_idx]}"
+                connect_zellij "${aliases[$real_idx]}" || true
                 filter_text=""
                 rebuild_filter
                 selected=$default_selected
@@ -639,7 +641,7 @@ interactive_select() {
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
-                connect_auth "${aliases[$real_idx]}"
+                connect_auth "${aliases[$real_idx]}" || true
                 filter_text=""
                 rebuild_filter
                 selected=$default_selected
@@ -650,7 +652,7 @@ interactive_select() {
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
-                connect_parallel "${aliases[$real_idx]}"
+                connect_parallel "${aliases[$real_idx]}" || true
                 filter_text=""
                 rebuild_filter
                 selected=$default_selected
@@ -661,7 +663,7 @@ interactive_select() {
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
-                connect_hard_reset "${aliases[$real_idx]}" --force
+                connect_hard_reset "${aliases[$real_idx]}" --force || true
                 filter_text=""
                 rebuild_filter
                 selected=$default_selected
@@ -672,7 +674,7 @@ interactive_select() {
                 local real_idx
                 real_idx=$(get_selected_real_index)
                 tput cnorm
-                list_and_connect "${aliases[$real_idx]}"
+                list_and_connect "${aliases[$real_idx]}" || true
                 filter_text=""
                 rebuild_filter
                 selected=$default_selected
@@ -763,9 +765,9 @@ is_session_alive() {
     shift
     local ssh_cmd=("$@")
     local safe_session
-    safe_session=$(regex_escape "$session")
+    safe_session=$(sanitize_session_name "$session")
     local ssh_cmd_timeout=("${ssh_cmd[0]}" "${SSH_QUERY_TIMEOUT_OPTS[@]}" "${ssh_cmd[@]:1}")
-    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "tmux has-session -t '${session}' 2>/dev/null && echo ALIVE" 2>/dev/null | grep -q "ALIVE"
+    _timeout "$SSH_QUERY_MAX_SECS" "${ssh_cmd_timeout[@]}" "tmux has-session -t '${safe_session}' 2>/dev/null && echo ALIVE" 2>/dev/null | grep -q "ALIVE"
 }
 
 # Cleanup dead sessions for an alias
@@ -1437,8 +1439,8 @@ add_connection() {
     local alias host port user directory description key
 
     read -p "Alias (unique name, e.g. myserver): " alias
-    if [[ -z "$alias" ]] || [[ "$alias" == *"|"* ]]; then
-        echo -e "${RED}Error: Alias cannot contain '|' or be empty${NC}"
+    if [[ -z "$alias" ]] || [[ ! "$alias" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        echo -e "${RED}Error: Alias must contain only letters, digits, dash, underscore, or dot${NC}"
         exit 1
     fi
     # Check for duplicate
@@ -1452,6 +1454,10 @@ add_connection() {
         echo -e "${RED}Host is required.${NC}"
         exit 1
     fi
+    if [[ "$host" =~ [[:space:]\;\`\$\(\)\{\}\|\'\"\\] ]]; then
+        echo -e "${RED}Error: Host contains invalid characters${NC}"
+        exit 1
+    fi
 
     read -p "Port [22]: " port
     port="${port:-22}"
@@ -1462,6 +1468,10 @@ add_connection() {
     read -p "User: " user
     if [[ -z "$user" ]]; then
         echo -e "${RED}User is required.${NC}"
+        exit 1
+    fi
+    if [[ "$user" =~ [[:space:]\;\`\$\(\)\{\}\|\'\"\\] ]]; then
+        echo -e "${RED}Error: User contains invalid characters${NC}"
         exit 1
     fi
 

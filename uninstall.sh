@@ -45,7 +45,7 @@ done
 
 # --- Install locations and binaries ---
 INSTALL_DIRS=("$HOME/.local/bin" "/usr/local/bin")
-BINARIES=("sm" "smd" "sml")
+BINARIES=("sm" "smd" "sml" "sm1" "sm1d" "sm1l" "sm2" "sm2d" "sm2l")
 CONFIG_DIR="$HOME/.config/sm"
 
 # --- Build list of files that actually exist (scan both locations) ---
