@@ -741,9 +741,9 @@ get_next_session_name() {
     local sessions
     sessions=$(get_sessions_for_alias "$alias" "${ssh_cmd[@]}")
     local count
-    count=$(echo "$sessions" | grep -c . || echo "0")
+    count=$(printf '%s' "$sessions" | grep -c . || true)
 
-    if [[ $count -eq 0 ]]; then
+    if [[ ${count:-0} -eq 0 ]]; then
         echo "$alias"
     else
         # Find highest number suffix and increment
